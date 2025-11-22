@@ -458,7 +458,7 @@ function App() {
       value: padding,
       description: `${padding.toFixed(0)} px · ${paddingInMm.toFixed(1)} mm`,
       min: 0,
-      max: 160,
+      max: 80,
       onChange: (v: number) => setPadding(v)
     },
     {
@@ -547,7 +547,7 @@ function App() {
                 description={`${padding.toFixed(0)} px · ${paddingInMm.toFixed(1)} mm`}
                 value={padding}
                 min={0}
-                max={160}
+                max={80}
                 showInput
                 onChange={(v) => setPadding(v)}
                 onReset={padding !== DEFAULT_PADDING ? () => setPadding(DEFAULT_PADDING) : undefined}
