@@ -19,6 +19,7 @@
 - Formatting: 2-space indent; keep JSX concise; add short comments only for non-obvious layout/rendering logic.
 - Naming: PascalCase for components, camelCase for vars/functions, UPPER_SNAKE for constants; file names PascalCase or kebab-case.
 - UI: prefer Tailwind utilities over inline styles; keep shared values centralized near component defaults.
+- Layout specifics: four-slot cards with per-card orientation and padding color (including auto-color from average image tone). Padding slider max is 80px; rounding applies to images only. Card pixel size scales up to fit high-res sources (capped) while keeping 10×15 aspect.
 
 ## Testing Guidelines
 - No automated tests configured. When adding, use Vitest + React Testing Library; colocate as `*.test.ts(x)` alongside source.
@@ -33,3 +34,9 @@
 ## Security & Configuration Tips
 - Do not commit secrets; prefer `.env` files kept locally (not tracked). If new env vars are needed, document them in `README.md`.
 - Validate user-provided images on the client only; no server-side processing is present in this repo.
+
+## Architecture Notes
+- Cards render from client-only data: per-slot images can rotate and pan within masks; padding is even on all sides and overflow is clipped.
+- Library previews support drag-and-drop plus tap to select; uploads append to the in-memory list.
+- Downloads: per-card PNGs and ZIP-all; gallery at bottom mirrors the rendered cards with per-card download buttons.
+- Keep UI responsive: large previews in the library and card grid use object-cover images; avoid blocking operations on the main thread when adding heavy features.*** End Patch" json-commentary> Nothing to patch. Please ensure that the patch is well-formed. Use *** Begin Patch and *** End Patch with proper formatting. If you have not done so, check your patch for errors.
