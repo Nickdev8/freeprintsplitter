@@ -1129,16 +1129,6 @@ function CardEditor({
                         ↻
                       </button>
                       <button
-                        className="px-1.5 py-1 text-[11px] rounded-md bg-white/90 border border-black/10"
-                        title="Center"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSlotChange(card.id, slot.id, { offsetX: 0, offsetY: 0 });
-                        }}
-                      >
-                        ⊕
-                      </button>
-                      <button
                         className="px-1.5 py-1 text-[11px] rounded-md bg-white/90 border border-black/10 text-rose-600"
                         title="Clear"
                         onClick={(e) => {
