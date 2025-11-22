@@ -7,15 +7,17 @@ Pack as many uploaded photos as possible onto a 10×15 cm (3:2) sheet, pick a co
 Requirements: Node 18+ and npm.
 
 ```bash
+cd app
 npm install
 npm run dev -- --host
 ```
 
-Open the printed URL (defaults to `http://localhost:5173`). Drop images, adjust padding + color, and hit **Download PNG**.
+Open the printed URL (defaults to `http://localhost:5173`). Drop images, adjust padding + color, and hit **Download ZIP**.
 
 ## Build & preview
 
 ```bash
+cd app
 npm run build
 npm run preview -- --host --port 4173
 ```

@@ -1,5 +1,7 @@
 node_modules
+app/node_modules
 dist
+app/dist
 .DS_Store
 npm-debug.log*
 pnpm-debug.log*

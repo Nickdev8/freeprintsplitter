@@ -1,0 +1,8 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    ports:
+      - "3016:80"
+    image: freeprintsplitter:latest
