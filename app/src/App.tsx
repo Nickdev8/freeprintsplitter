@@ -8,18 +8,21 @@ type LoadedImage = {
   width: number;
   height: number;
   image: HTMLImageElement;
+  sizeLabel: string;
 };
 
 type Slot = {
   id: string;
   image?: LoadedImage;
+  rotationDeg: number;
   offsetX: number;
   offsetY: number;
-  rotationDeg: number;
 };
 
 type Card = {
   id: string;
+  paddingColor: string;
+  orientation: "landscape" | "portrait";
   slots: Slot[];
 };
 
@@ -28,6 +31,20 @@ const CM_HEIGHT = 10;
 const DPI = 300;
 const SLOT_COUNT = 4;
 const SLOTS_PER_ROW = 2;
+const CARD_RADIUS = 0;
+const MAX_CARD_SCALE = 4;
+const DEFAULT_PADDING = 18;
+const DEFAULT_PADDING_COLOR = "#f4edde";
+const DEFAULT_ROUNDING = 12;
+
+const colorPresets = [
+  { label: "Soft cream", value: "#f4edde" },
+  { label: "Stone gray", value: "#eceff3" },
+  { label: "Fog blue", value: "#dbe7ff" },
+  { label: "Mint", value: "#e3f5e2" },
+  { label: "Blush", value: "#ffe6ec" },
+  { label: "Charcoal", value: "#1f1f2a" }
+];
 
 const buildId = () => Math.random().toString(36).slice(2);
 
@@ -39,6 +56,39 @@ const PORTRAIT_SIZE = {
   width: LANDSCAPE_SIZE.height,
   height: LANDSCAPE_SIZE.width
 };
+
+const getSizeForOrientation = (orientation: "landscape" | "portrait") =>
+  orientation === "landscape" ? LANDSCAPE_SIZE : PORTRAIT_SIZE;
+
+const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
+
+function getCardScale(card: Card, padding: number) {
+  const baseSize = getSizeForOrientation(card.orientation);
+  const metrics = getSlotMetrics(0, baseSize, padding);
+  const innerW = metrics.innerW;
+  const innerH = metrics.innerH;
+  let maxW = 0;
+  let maxH = 0;
+  card.slots.forEach((slot) => {
+    if (slot.image) {
+      maxW = Math.max(maxW, slot.image.width);
+      maxH = Math.max(maxH, slot.image.height);
+    }
+  });
+  if (maxW === 0 || maxH === 0) return 1;
+  const scaleNeeded = Math.max(maxW / innerW, maxH / innerH);
+  return clamp(scaleNeeded, 1, MAX_CARD_SCALE);
+}
+
+function getScaledCardSize(card: Card, padding: number) {
+  const base = getSizeForOrientation(card.orientation);
+  const scale = getCardScale(card, padding);
+  return {
+    width: Math.round(base.width * scale),
+    height: Math.round(base.height * scale),
+    scale
+  };
+}
 
 async function loadImages(files: FileList) {
   const list = Array.from(files).filter((file) => file.type.startsWith("image/"));
@@ -55,7 +105,8 @@ async function loadImages(files: FileList) {
             url,
             width: img.naturalWidth,
             height: img.naturalHeight,
-            image: img
+            image: img,
+            sizeLabel: `${img.naturalWidth}×${img.naturalHeight}`
           });
         img.onerror = () => {
           URL.revokeObjectURL(url);
@@ -79,6 +130,7 @@ type SlotMetrics = {
   innerH: number;
   centerX: number;
   centerY: number;
+  pad: number;
 };
 
 function getSlotMetrics(index: number, size: { width: number; height: number }, padding: number) {
@@ -90,21 +142,47 @@ function getSlotMetrics(index: number, size: { width: number; height: number }, 
   const row = Math.floor(index / cols);
   const x = col * outerW;
   const y = row * outerH;
-  const innerW = Math.max(outerW - padding * 2, 1);
-  const innerH = Math.max(outerH - padding * 2, 1);
-  const centerX = x + padding + innerW / 2;
-  const centerY = y + padding + innerH / 2;
-  return { x, y, outerW, outerH, innerW, innerH, centerX, centerY };
+  const pad = Math.max(0, Math.min(padding, Math.min(outerW, outerH) / 2 - 1));
+  const innerW = Math.max(outerW - pad * 2, 1);
+  const innerH = Math.max(outerH - pad * 2, 1);
+  const centerX = x + pad + innerW / 2;
+  const centerY = y + pad + innerH / 2;
+  return { x, y, outerW, outerH, innerW, innerH, centerX, centerY, pad };
+}
+
+function getImagePlacement(slot: Slot, metrics: ReturnType<typeof getSlotMetrics>) {
+  if (!slot.image) return null;
+  const baseScale = Math.max(metrics.innerW / slot.image.width, metrics.innerH / slot.image.height);
+  const drawW = slot.image.width * baseScale;
+  const drawH = slot.image.height * baseScale;
+  const maxOffsetX = Math.max(0, (drawW - metrics.innerW) / 2);
+  const maxOffsetY = Math.max(0, (drawH - metrics.innerH) / 2);
+  const clampedX = clamp(slot.offsetX ?? 0, -maxOffsetX, maxOffsetX);
+  const clampedY = clamp(slot.offsetY ?? 0, -maxOffsetY, maxOffsetY);
+  const innerLeft = metrics.innerW / 2 + clampedX - drawW / 2;
+  const innerTop = metrics.innerH / 2 + clampedY - drawH / 2;
+  return {
+    drawW,
+    drawH,
+    offsetX: clampedX,
+    offsetY: clampedY,
+    innerLeft,
+    innerTop,
+    maxOffsetX,
+    maxOffsetY
+  };
 }
 
 function createEmptyCard(): Card {
   return {
     id: `card-${buildId()}`,
+    paddingColor: DEFAULT_PADDING_COLOR,
+    orientation: "landscape",
     slots: Array.from({ length: SLOT_COUNT }, () => ({
       id: `slot-${buildId()}`,
+      rotationDeg: 0,
       offsetX: 0,
-      offsetY: 0,
-      rotationDeg: 0
+      offsetY: 0
     }))
   };
 }
@@ -132,14 +210,11 @@ function App() {
   const imagesRef = useRef<LoadedImage[]>([]);
   const [images, setImages] = useState<LoadedImage[]>([]);
   const [cards, setCards] = useState<Card[]>([createEmptyCard()]);
-  const [padding, setPadding] = useState(18);
-  const [paddingColor, setPaddingColor] = useState("#f4edde");
-  const [rounding, setRounding] = useState(12);
-  const [orientation, setOrientation] = useState<"landscape" | "portrait">(
-    "landscape"
-  );
+  const [padding, setPadding] = useState(DEFAULT_PADDING);
+  const [rounding, setRounding] = useState(DEFAULT_ROUNDING);
   const [hovering, setHovering] = useState(false);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const [isFilling, setIsFilling] = useState(false);
   const imageUsage = useMemo(() => {
     const map = new Map<string, { cardId: string; slotId: string }>();
     cards.forEach((card) =>
@@ -151,8 +226,6 @@ function App() {
     );
     return map;
   }, [cards]);
-
-  const size = orientation === "landscape" ? LANDSCAPE_SIZE : PORTRAIT_SIZE;
 
   useEffect(() => {
     imagesRef.current = images;
@@ -180,28 +253,20 @@ function App() {
   const placeImage = (cardId: string, slotId: string, imageId: string) => {
     const img = images.find((i) => i.id === imageId);
     if (!img) return;
-    setCards((prev) => {
-      const target = prev.find((c) => c.id === cardId);
-      const wasFull = target ? target.slots.every((s) => s.image) : false;
-      let becameFull = false;
-
-      const next = prev.map((card) => {
-        if (card.id !== cardId) return card;
-        const slots = card.slots.map((slot) =>
-          slot.id === slotId
-            ? { ...slot, image: img, offsetX: 0, offsetY: 0, rotationDeg: 0 }
-            : slot
-        );
-        const nowFull = slots.every((s) => s.image);
-        if (!wasFull && nowFull) becameFull = true;
-        return { ...card, slots };
-      });
-
-      if (becameFull) {
-        next.push(createEmptyCard());
-      }
-      return next;
-    });
+    setCards((prev) =>
+      prev.map((card) =>
+        card.id === cardId
+          ? {
+              ...card,
+              slots: card.slots.map((slot) =>
+                slot.id === slotId
+                  ? { ...slot, image: img, rotationDeg: 0, offsetX: 0, offsetY: 0 }
+                  : slot
+              )
+            }
+          : card
+      )
+    );
   };
 
   const removeImageFromCards = (imageId: string) => {
@@ -209,9 +274,7 @@ function App() {
       prev.map((card) => ({
         ...card,
         slots: card.slots.map((slot) =>
-          slot.image?.id === imageId
-            ? { ...slot, image: undefined, offsetX: 0, offsetY: 0, rotationDeg: 0 }
-            : slot
+          slot.image?.id === imageId ? { ...slot, image: undefined, rotationDeg: 0 } : slot
         )
       }))
     );
@@ -234,10 +297,8 @@ function App() {
         card.id === cardId
           ? {
               ...card,
-        slots: card.slots.map((slot) =>
-                slot.id === slotId
-                  ? { ...slot, image: undefined, offsetX: 0, offsetY: 0, rotationDeg: 0 }
-                  : slot
+              slots: card.slots.map((slot) =>
+                slot.id === slotId ? { ...slot, image: undefined, rotationDeg: 0, offsetX: 0, offsetY: 0 } : slot
               )
             }
           : card
@@ -252,25 +313,12 @@ function App() {
     setSelectedImageId(null);
   };
 
-  const centerCard = (cardId: string) => {
-    setCards((prev) =>
-      prev.map((card) =>
-        card.id === cardId
-          ? {
-              ...card,
-              slots: card.slots.map((slot) =>
-                slot.image ? { ...slot, offsetX: 0, offsetY: 0, rotationDeg: 0 } : slot
-              )
-            }
-          : card
-      )
-    );
-  };
-
   const autoFill = () => {
+    if (isFilling) return;
     const used = new Set(imageUsage.keys());
     const queue = images.filter((img) => !used.has(img.id));
     if (queue.length === 0) return;
+    setIsFilling(true);
 
     setCards((prev) => {
       const nextCards = prev.map((card) => ({
@@ -278,80 +326,111 @@ function App() {
         slots: card.slots.map((slot) => ({ ...slot }))
       }));
 
-      const fillSlots = (cardsList: Card[]) => {
-        for (const card of cardsList) {
-          for (const slot of card.slots) {
-            if (queue.length === 0) return;
-            if (!slot.image) {
-              const img = queue.shift();
-              if (!img) return;
-              slot.image = img;
-              slot.offsetX = 0;
-              slot.offsetY = 0;
-              slot.rotationDeg = 0;
-            }
+      let idx = 0;
+      // Fill existing empty slots first.
+      for (const card of nextCards) {
+        for (const slot of card.slots) {
+          if (idx >= queue.length) break;
+          if (!slot.image) {
+            const img = queue[idx++];
+            slot.image = img;
+            slot.rotationDeg = 0;
+            slot.offsetX = 0;
+            slot.offsetY = 0;
           }
         }
-      };
+      }
 
-      fillSlots(nextCards);
-      while (queue.length > 0) {
+      // Add new cards if images remain.
+      while (idx < queue.length) {
         const newCard = createEmptyCard();
+        for (let s = 0; s < newCard.slots.length && idx < queue.length; s += 1) {
+          const img = queue[idx++];
+          newCard.slots[s].image = img;
+          newCard.slots[s].rotationDeg = 0;
+          newCard.slots[s].offsetX = 0;
+          newCard.slots[s].offsetY = 0;
+        }
         nextCards.push(newCard);
-        fillSlots([newCard]);
       }
       return nextCards;
     });
+
+    setTimeout(() => setIsFilling(false), 0);
   };
 
   const paddingInMm = (padding / DPI) * 25.4;
+  const resetStyling = () => {
+    setPadding(DEFAULT_PADDING);
+    setRounding(DEFAULT_ROUNDING);
+  };
+
+  const setCardColor = (cardId: string, value: string) => {
+    setCards((prev) =>
+      prev.map((card) => (card.id === cardId ? { ...card, paddingColor: value } : card))
+    );
+  };
+
+  const setCardOrientation = (cardId: string, orientation: "landscape" | "portrait") => {
+    setCards((prev) =>
+      prev.map((card) => (card.id === cardId ? { ...card, orientation } : card))
+    );
+  };
+
+  const galleryRef = useRef<HTMLDivElement | null>(null);
+  const scrollToGallery = () => {
+    galleryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const renderCardToBlob = async (card: Card): Promise<Blob | null> => {
+    const cardSize = getScaledCardSize(card, padding);
+    const scaledPadding = padding * cardSize.scale;
+    const canvas = document.createElement("canvas");
+    canvas.width = cardSize.width;
+    canvas.height = cardSize.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    ctx.fillStyle = card.paddingColor;
+    ctx.fillRect(0, 0, cardSize.width, cardSize.height);
+
+    card.slots.forEach((slot, slotIndex) => {
+      if (!slot.image) return;
+      const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding);
+      const placement = getImagePlacement(slot, metrics);
+      if (!placement) return;
+      const centerX = metrics.x + metrics.pad + placement.innerLeft + placement.drawW / 2;
+      const centerY = metrics.y + metrics.pad + placement.innerTop + placement.drawH / 2;
+
+      ctx.save();
+      roundRect(ctx, metrics.x + metrics.pad, metrics.y + metrics.pad, metrics.innerW, metrics.innerH, rounding);
+      ctx.clip();
+      const angle = ((slot.rotationDeg || 0) * Math.PI) / 180;
+      ctx.translate(centerX, centerY);
+      ctx.rotate(angle);
+      ctx.drawImage(slot.image.image, -placement.drawW / 2, -placement.drawH / 2, placement.drawW, placement.drawH);
+      ctx.restore();
+    });
+
+    ctx.strokeStyle = "rgba(20, 20, 20, 0.08)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, cardSize.width - 2, cardSize.height - 2);
+    return canvasToBlob(canvas);
+  };
 
   const downloadZip = async () => {
     const zip = new JSZip();
-    for (let c = 0; c < cards.length; c += 1) {
-      const canvas = document.createElement("canvas");
-      canvas.width = size.width;
-      canvas.height = size.height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) continue;
+    const blobs = await Promise.all(
+      cards.map((card, idx) =>
+        renderCardToBlob(card).then((blob) => ({ blob, idx, orientation: card.orientation }))
+      )
+    );
 
-      ctx.fillStyle = paddingColor;
-      ctx.fillRect(0, 0, size.width, size.height);
-
-      cards[c].slots.forEach((slot, slotIndex) => {
-        if (!slot.image) return;
-        const metrics = getSlotMetrics(slotIndex, size, padding);
-        // Use cover fit so 4:3-heavy photos fill the slot without letterboxing
-        const baseScale = Math.max(
-          metrics.innerW / slot.image.width,
-          metrics.innerH / slot.image.height
-        );
-        const drawW = slot.image.width * baseScale;
-        const drawH = slot.image.height * baseScale;
-        const offsetX = slot.offsetX * (metrics.innerW / 2);
-        const offsetY = slot.offsetY * (metrics.innerH / 2);
-        const centerX = metrics.centerX + offsetX;
-        const centerY = metrics.centerY + offsetY;
-
-        ctx.save();
-        roundRect(ctx, metrics.x + padding, metrics.y + padding, metrics.innerW, metrics.innerH, rounding);
-        ctx.clip();
-        const angle = ((slot.rotationDeg || 0) * Math.PI) / 180;
-        ctx.translate(centerX, centerY);
-        ctx.rotate(angle);
-        ctx.drawImage(slot.image.image, -drawW / 2, -drawH / 2, drawW, drawH);
-        ctx.restore();
-      });
-
-      ctx.strokeStyle = "rgba(20, 20, 20, 0.08)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(1, 1, size.width - 2, size.height - 2);
-
-      const blob = await canvasToBlob(canvas);
+    blobs.forEach(({ blob, idx, orientation }) => {
       if (blob) {
-        zip.file(`card-${c + 1}-${orientation}.png`, blob);
+        zip.file(`card-${idx + 1}-${orientation}.png`, blob);
       }
-    }
+    });
 
     const content = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(content);
@@ -362,21 +441,32 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadSingle = async (card: Card, index: number) => {
+    const blob = await renderCardToBlob(card);
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `card-${index + 1}-${card.orientation}.png`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const controlBlock = [
     {
       label: "Padding",
       value: padding,
       description: `${padding.toFixed(0)} px · ${paddingInMm.toFixed(1)} mm`,
       min: 0,
-      max: 64,
+      max: 160,
       onChange: (v: number) => setPadding(v)
     },
     {
-      label: "Corner rounding",
+      label: "Image rounding",
       value: rounding,
       description: `${rounding.toFixed(0)} px`,
       min: 0,
-      max: 48,
+      max: 120,
       onChange: (v: number) => setRounding(v)
     },
   ];
@@ -399,24 +489,6 @@ function App() {
             the masked area. Defaults are tuned for 4:3 photos; add more cards as you fill four slots.
           </p>
           <div className="flex flex-wrap gap-3">
-            <button
-              className={`px-4 py-3 rounded-2xl border border-black/5 shadow-sm bg-white/70 hover:-translate-y-0.5 transition ${orientation === "landscape" ? "ring-2 ring-sky-200" : ""}`}
-              onClick={() => setOrientation("landscape")}
-            >
-              <div className="font-semibold">Landscape</div>
-              <div className="text-xs text-slate-600">
-                {formatSize(LANDSCAPE_SIZE.width, LANDSCAPE_SIZE.height)} px
-              </div>
-            </button>
-            <button
-              className={`px-4 py-3 rounded-2xl border border-black/5 shadow-sm bg-white/70 hover:-translate-y-0.5 transition ${orientation === "portrait" ? "ring-2 ring-sky-200" : ""}`}
-              onClick={() => setOrientation("portrait")}
-            >
-              <div className="font-semibold">Portrait</div>
-              <div className="text-xs text-slate-600">
-                {formatSize(PORTRAIT_SIZE.width, PORTRAIT_SIZE.height)} px
-              </div>
-            </button>
             <button
               className="px-4 py-3 rounded-2xl border border-black/10 text-slate-800 bg-slate-100 hover:-translate-y-0.5 transition"
               onClick={clearAll}
@@ -470,33 +542,25 @@ function App() {
           <div className="glass rounded-2xl p-5 space-y-4">
             <p className="font-semibold">Card styling</p>
             <div className="grid gap-4">
-              {controlBlock.map((ctrl) => (
-                <SliderRow
-                  key={ctrl.label}
-                  label={ctrl.label}
-                  description={ctrl.description}
-                  value={ctrl.value}
-                  min={ctrl.min}
-                  max={ctrl.max}
-                  step={1}
-                  onChange={ctrl.onChange}
-                />
-              ))}
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold">Padding color</p>
-                  <p className="text-xs text-slate-600">Background and slot fill</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={paddingColor}
-                    onChange={(e) => setPaddingColor(e.target.value)}
-                    className="w-12 h-10 rounded-lg border border-black/10 bg-white"
-                  />
-                  <span className="text-xs font-mono">{paddingColor.toUpperCase()}</span>
-                </div>
-              </div>
+              <SliderRow
+                label="Padding"
+                description={`${padding.toFixed(0)} px · ${paddingInMm.toFixed(1)} mm`}
+                value={padding}
+                min={0}
+                max={160}
+                showInput
+                onChange={(v) => setPadding(v)}
+                onReset={padding !== DEFAULT_PADDING ? () => setPadding(DEFAULT_PADDING) : undefined}
+              />
+              <SliderRow
+                label="Image rounding"
+                description={`${rounding.toFixed(0)} px`}
+                value={rounding}
+                min={0}
+                max={120}
+                onChange={(v) => setRounding(v)}
+                onReset={rounding !== DEFAULT_ROUNDING ? () => setRounding(DEFAULT_ROUNDING) : undefined}
+              />
             </div>
           </div>
 
@@ -511,54 +575,59 @@ function App() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    className="px-3 py-1.5 text-xs rounded-lg border border-black/10 bg-white"
+                    className="px-3 py-1.5 text-xs rounded-lg border border-black/10 bg-white disabled:opacity-50"
                     onClick={autoFill}
+                    disabled={isFilling}
                   >
-                    Auto-fill empties
+                    {isFilling ? "Auto-filling…" : "Auto-fill empties"}
                   </button>
                   <span className="text-xs text-slate-500">{images.length} items</span>
                 </div>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {images.map((img) => (
-                  <button
-                    key={img.id}
-                    className={`relative group flex gap-2 items-center border border-black/5 rounded-xl p-2 text-left bg-white/70 hover:-translate-y-0.5 transition ${
-                      selectedImageId === img.id ? "ring-2 ring-sky-200" : ""
-                    }`}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData("text/image-id", img.id)}
-                    onClick={(e) => {
-                      if (imageUsage.has(img.id)) {
-                        e.preventDefault();
-                        removeImageFromCards(img.id);
-                        return;
-                      }
-                      setSelectedImageId((prev) => (prev === img.id ? null : img.id));
-                    }}
-                  >
-                    <div
-                      className="w-12 h-12 rounded-lg bg-cover bg-center border border-black/5"
-                      style={{ backgroundImage: `url(${img.url})` }}
-                    />
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold line-clamp-1">{img.name}</p>
-                      <p className="text-xs text-slate-600">
-                        {img.width} × {img.height}
-                      </p>
-                    </div>
-                    {imageUsage.has(img.id) && (
-                      <div className="absolute right-2 top-2">
-                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500 text-white text-xs font-bold group-hover:hidden">
-                          ✓
-                        </span>
-                        <span className="hidden group-hover:inline-flex items-center justify-center w-6 h-6 rounded-full bg-rose-500 text-white text-xs font-bold">
-                          ×
-                        </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                {images.map((img) => {
+                  const used = imageUsage.has(img.id);
+                  return (
+                    <button
+                      key={img.id}
+                      className={`relative group border border-black/5 rounded-2xl overflow-hidden text-left bg-white/95 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition ${
+                        selectedImageId === img.id ? "ring-2 ring-sky-200" : ""
+                      }`}
+                      draggable
+                      onDragStart={(e) => e.dataTransfer.setData("text/image-id", img.id)}
+                      onClick={() => setSelectedImageId((prev) => (prev === img.id ? null : img.id))}
+                    >
+                      <div className="relative w-full bg-slate-100">
+                        <img
+                          src={img.url}
+                          alt={img.name}
+                          className="w-full h-56 sm:h-64 object-cover"
+                          draggable={false}
+                        />
+                        <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-80" />
+                        <div className="absolute top-2 left-2 inline-flex items-center gap-1 px-2 py-1 rounded-full bg-white/90 text-xs font-semibold border border-black/10">
+                          {used ? "Used" : "Unused"}
+                          {used && <span className="text-emerald-600">✔</span>}
+                        </div>
+                        <div className="absolute bottom-2 left-2 right-2 text-white drop-shadow">
+                          <p className="text-sm font-semibold truncate">{img.name}</p>
+                          <p className="text-[11px] font-mono opacity-90">{img.sizeLabel}</p>
+                        </div>
                       </div>
-                    )}
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
+                <label className="flex flex-col items-center justify-center border border-dashed border-slate-300 rounded-2xl p-6 text-slate-600 bg-white/80 hover:bg-white transition cursor-pointer min-h-[200px]">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => handleFiles(e.target.files)}
+                  />
+                  <span className="text-3xl">＋</span>
+                  <span className="text-sm mt-1 font-semibold">Upload more</span>
+                </label>
               </div>
             </div>
           )}
@@ -576,7 +645,10 @@ function App() {
               <div className="flex gap-2">
                 <button
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-slate-900 to-slate-700 text-white shadow-lg disabled:opacity-60"
-                  onClick={downloadZip}
+                  onClick={() => {
+                    scrollToGallery();
+                    downloadZip();
+                  }}
                   disabled={cards.length === 0}
                 >
                   Download ZIP
@@ -584,27 +656,72 @@ function App() {
               </div>
             </div>
           <CardStack
-            size={size}
             padding={padding}
             rounding={rounding}
-            shadow={shadow}
-            paddingColor={paddingColor}
             cards={cards}
             selectedImageId={selectedImageId}
+            selectedImage={images.find((img) => img.id === selectedImageId) || null}
             onPlaceImage={placeImage}
-          onSlotSelectImage={(imageId) => setSelectedImageId(imageId)}
-          onSlotChange={updateSlot}
-          onSlotClear={clearSlot}
-          onCenterCard={centerCard}
-          onRemoveCard={(id) =>
-            setCards((prev) => (prev.length > 1 ? prev.filter((c) => c.id !== id) : prev))
-          }
-          onAddCard={() => setCards((prev) => [...prev, createEmptyCard()])}
-          totalCards={cards.length}
-        />
+            onSlotSelectImage={(imageId) => setSelectedImageId(imageId)}
+            onSlotChange={updateSlot}
+            onSlotClear={clearSlot}
+            onRemoveCard={(id) =>
+              setCards((prev) => (prev.length > 1 ? prev.filter((c) => c.id !== id) : prev))
+            }
+            onAddCard={() => setCards((prev) => [...prev, createEmptyCard()])}
+            onCardColorChange={setCardColor}
+            onCardOrientationChange={setCardOrientation}
+            totalCards={cards.length}
+          />
           </div>
         </section>
       </main>
+
+      <section ref={galleryRef} className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-semibold">Card preview grid</p>
+            <p className="text-xs text-slate-600">
+              Quick-look thumbnails with per-card download, or grab all as ZIP.
+            </p>
+          </div>
+          <button
+            className="px-3 py-2 text-xs rounded-xl bg-gradient-to-r from-slate-900 to-slate-700 text-white shadow-lg disabled:opacity-60"
+            onClick={downloadZip}
+            disabled={cards.length === 0}
+          >
+            Download all (ZIP)
+          </button>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {cards.map((card, index) => {
+            const cardSize = getScaledCardSize(card, padding);
+            return (
+              <div
+                key={`gallery-${card.id}`}
+                className="rounded-xl border border-black/5 bg-white/80 p-3 shadow-sm flex flex-col gap-2"
+              >
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span className="font-semibold">Card {index + 1}</span>
+                  <span>
+                    {card.orientation === "landscape" ? "10×15" : "15×10"} · {cardSize.width}×
+                    {cardSize.height}px
+                  </span>
+                </div>
+                <div className="w-full aspect-[3/2] rounded-lg overflow-hidden border border-black/10 bg-white">
+                  <CardThumbnail card={card} padding={padding} rounding={rounding} />
+                </div>
+                <button
+                  className="px-3 py-2 text-xs rounded-lg border border-black/10 bg-white hover:-translate-y-0.5 transition"
+                  onClick={() => downloadSingle(card, index)}
+                >
+                  Download card
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }
@@ -617,15 +734,37 @@ type SliderRowProps = {
   max: number;
   step?: number;
   onChange: (value: number) => void;
+  onReset?: () => void;
+  showInput?: boolean;
 };
 
-function SliderRow({ label, description, value, min, max, step = 1, onChange }: SliderRowProps) {
+function SliderRow({ label, description, value, min, max, step = 1, onChange, onReset, showInput }: SliderRowProps) {
   return (
     <div className="flex items-center gap-3">
       <div className="flex-1">
         <p className="text-sm font-semibold">{label}</p>
         <p className="text-xs text-slate-600">{description}</p>
       </div>
+      {onReset && (
+        <button
+          className="px-2 py-1 text-xs rounded-lg border border-black/10 bg-white"
+          onClick={onReset}
+          title="Reset to default"
+        >
+          ⟲
+        </button>
+      )}
+      {showInput && (
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="w-20 rounded-lg border border-black/10 px-2 py-1 text-sm"
+        />
+      )}
       <input
         type="range"
         min={min}
@@ -652,37 +791,35 @@ function Stat({ label, primary, secondary }: StatProps) {
 
 type CardStackProps = {
   cards: Card[];
-  size: { width: number; height: number };
   padding: number;
   rounding: number;
-  shadow: number;
-  paddingColor: string;
   selectedImageId: string | null;
+  selectedImage: LoadedImage | null;
   onPlaceImage: (cardId: string, slotId: string, imageId: string) => void;
   onSlotSelectImage: (imageId: string | null) => void;
   onSlotChange: (cardId: string, slotId: string, patch: Partial<Slot>) => void;
   onSlotClear: (cardId: string, slotId: string) => void;
-  onCenterCard: (cardId: string) => void;
   onRemoveCard: (cardId: string) => void;
   onAddCard: () => void;
+  onCardColorChange: (cardId: string, value: string) => void;
+  onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
   totalCards: number;
 };
 
 function CardStack({
   cards,
-  size,
   padding,
   rounding,
-  shadow,
-  paddingColor,
   selectedImageId,
+  selectedImage,
   onPlaceImage,
   onSlotSelectImage,
   onSlotChange,
   onSlotClear,
-  onCenterCard,
   onRemoveCard,
   onAddCard,
+  onCardColorChange,
+  onCardOrientationChange,
   totalCards
 }: CardStackProps) {
   return (
@@ -696,21 +833,20 @@ function CardStack({
           card={card}
           index={index}
           totalCards={totalCards}
-          size={size}
           padding={padding}
-          paddingColor={paddingColor}
           rounding={rounding}
-          shadow={shadow}
           selectedImageId={selectedImageId}
+          selectedImage={selectedImage}
           onPlaceImage={onPlaceImage}
           onSlotSelectImage={onSlotSelectImage}
           onSlotChange={onSlotChange}
           onSlotClear={onSlotClear}
-          onCenterCard={onCenterCard}
           onRemoveCard={onRemoveCard}
+          onCardColorChange={onCardColorChange}
+          onCardOrientationChange={onCardOrientationChange}
         />
       ))}
-      <AddCardButton onAdd={onAddCard} size={size} rounding={rounding} shadow={shadow} paddingColor={paddingColor} />
+      <AddCardButton onAdd={onAddCard} size={LANDSCAPE_SIZE} rounding={rounding} paddingColor={DEFAULT_PADDING_COLOR} />
     </div>
   );
 }
@@ -719,44 +855,37 @@ type CardEditorProps = {
   card: Card;
   index: number;
   totalCards: number;
-  size: { width: number; height: number };
   padding: number;
-  paddingColor: string;
   rounding: number;
-  shadow: number;
   selectedImageId: string | null;
+  selectedImage: LoadedImage | null;
   onPlaceImage: (cardId: string, slotId: string, imageId: string) => void;
   onSlotSelectImage: (imageId: string | null) => void;
   onSlotChange: (cardId: string, slotId: string, patch: Partial<Slot>) => void;
   onSlotClear: (cardId: string, slotId: string) => void;
-  onCenterCard: (cardId: string) => void;
   onRemoveCard: (cardId: string) => void;
+  onCardColorChange: (cardId: string, value: string) => void;
+  onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
 };
 
 function CardEditor({
   card,
   index,
-  size,
   padding,
-  paddingColor,
   rounding,
-  shadow,
   selectedImageId,
+  selectedImage,
   onPlaceImage,
   onSlotSelectImage,
   onSlotChange,
   onSlotClear,
-  onCenterCard,
   onRemoveCard,
+  onCardColorChange,
+  onCardOrientationChange,
   totalCards
 }: CardEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
   const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
-  const dragRef = useRef<{ slotId: string | null; pointerId: number | null }>({
-    slotId: null,
-    pointerId: null
-  });
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -774,8 +903,10 @@ function CardEditor({
     return () => observer.disconnect();
   }, []);
 
-  const scaleX = bounds.width ? bounds.width / size.width : 1;
-  const scaleY = bounds.height ? bounds.height / size.height : 1;
+  const cardSize = getScaledCardSize(card, padding);
+  const scaledPadding = padding * cardSize.scale;
+  const scaleX = bounds.width ? bounds.width / cardSize.width : 1;
+  const scaleY = bounds.height ? bounds.height / cardSize.height : 1;
   const scale = Math.min(scaleX || 1, scaleY || 1);
 
   const handleDropOnSlot = (slotId: string, e: React.DragEvent) => {
@@ -783,49 +914,8 @@ function CardEditor({
     const id = e.dataTransfer.getData("text/image-id");
     if (id) {
       onPlaceImage(card.id, slotId, id);
-      setSelectedSlotId(slotId);
     }
   };
-
-  const handleSlotClick = (slotId: string) => {
-    if (selectedImageId) {
-      onPlaceImage(card.id, slotId, selectedImageId);
-      setSelectedSlotId(slotId);
-      onSlotSelectImage(null);
-      return;
-    }
-    setSelectedSlotId(slotId);
-  };
-
-  const handlePointerDown = (e: React.PointerEvent, slotIndex: number, slotId: string) => {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    dragRef.current = { slotId, pointerId: e.pointerId };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent, slotIndex: number, slotId: string) => {
-    if (dragRef.current.slotId !== slotId) return;
-    const metrics = getSlotMetrics(slotIndex, size, padding);
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const posX = (e.clientX - rect.left) / scale;
-    const posY = (e.clientY - rect.top) / scale;
-    const offsetX = (posX - metrics.centerX) / (metrics.innerW / 2);
-    const offsetY = (posY - metrics.centerY) / (metrics.innerH / 2);
-    onSlotChange(card.id, slotId, {
-      offsetX: Math.max(Math.min(offsetX, 3), -3),
-      offsetY: Math.max(Math.min(offsetY, 3), -3)
-    });
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (dragRef.current.pointerId !== null) {
-      (e.target as HTMLElement).releasePointerCapture(dragRef.current.pointerId);
-    }
-    dragRef.current = { slotId: null, pointerId: null };
-  };
-
-  const selectedSlot = card.slots.find((slot) => slot.id === selectedSlotId);
 
   return (
     <div className="rounded-2xl border border-black/5 bg-white/80 p-4 shadow-lg">
@@ -833,98 +923,179 @@ function CardEditor({
         <span className="font-semibold">Card {index + 1}</span>
         <div className="flex items-center gap-2">
           <span className="text-xs">
-            10×15 cm · {size.width}×{size.height}px
+            {card.orientation === "landscape" ? "10×15 cm" : "15×10 cm"} · {cardSize.width}×
+            {cardSize.height}px
           </span>
-          <button
-            className="px-2 py-1 text-xs rounded-lg border border-black/10 bg-white"
-            onClick={() => onCenterCard(card.id)}
-          >
-            Center all
-          </button>
-          <button
-            className="px-2 py-1 text-xs rounded-lg border border-rose-100 bg-rose-50 text-rose-700 disabled:opacity-50"
-            disabled={totalCards <= 1}
-            onClick={() => onRemoveCard(card.id)}
-          >
-            Remove
-          </button>
+          {index > 0 && (
+            <button
+              className="px-2 py-1 text-xs rounded-lg border border-rose-100 bg-rose-50 text-rose-700"
+              onClick={() => onRemoveCard(card.id)}
+            >
+              Remove
+            </button>
+          )}
         </div>
       </div>
-      <div
-        className="relative w-full border border-black/5 overflow-hidden"
-        ref={containerRef}
-        style={{
-          aspectRatio: `${size.width} / ${size.height}`,
-          borderRadius: `${rounding + 8}px`,
-          backgroundColor: paddingColor,
-          boxShadow: shadow
-            ? `0 ${shadow * 0.4}px ${shadow}px rgba(0,0,0,0.12), inset 0 0 0 1px rgba(255,255,255,0.6)`
-            : "inset 0 0 0 1px rgba(255,255,255,0.6)"
-        }}
-      >
-        {card.slots.map((slot, slotIndex) => {
-          const metrics = getSlotMetrics(slotIndex, size, padding);
-          const left = metrics.x * scale;
-          const top = metrics.y * scale;
-          const width = metrics.outerW * scale;
-          const height = metrics.outerH * scale;
-          const padPx = padding * scale;
-          const innerW = metrics.innerW * scale;
-          const innerH = metrics.innerH * scale;
-
-          const baseScale = slot.image
-            ? Math.max(metrics.innerW / slot.image.width, metrics.innerH / slot.image.height)
-            : 1;
-          const drawW = slot.image ? slot.image.width * baseScale : 0;
-          const drawH = slot.image ? slot.image.height * baseScale : 0;
-          const drawWPx = drawW * scale;
-          const drawHPx = drawH * scale;
-          const offsetX = slot.offsetX * (metrics.innerW / 2);
-          const offsetY = slot.offsetY * (metrics.innerH / 2);
-          const centerXPx = innerW / 2 + offsetX * scale;
-          const centerYPx = innerH / 2 + offsetY * scale;
-          const drawLeft = centerXPx - drawWPx / 2;
-          const drawTop = centerYPx - drawHPx / 2;
-          const rotation = slot.rotationDeg || 0;
+        <div className="flex flex-wrap items-center gap-2 mb-3 text-xs text-slate-600">
+          <span>Card color</span>
+          <div className="flex flex-wrap gap-1">
+            {colorPresets.map((preset) => (
+              <button
+              key={preset.value + card.id}
+              className={`w-7 h-7 rounded-full border ${
+                card.paddingColor.toLowerCase() === preset.value.toLowerCase()
+                  ? "border-sky-300 ring-1 ring-sky-200"
+                  : "border-black/10"
+              }`}
+              style={{ backgroundColor: preset.value }}
+              onClick={() => onCardColorChange(card.id, preset.value)}
+              title={preset.label}
+            />
+          ))}
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
+          <span className="text-xs text-slate-600">Orientation</span>
+          <div className="flex gap-1">
+            {(["landscape", "portrait"] as const).map((o) => (
+              <button
+                key={o}
+                className={`px-2 py-1 text-[11px] rounded-lg border ${
+                  card.orientation === o ? "border-sky-300 bg-white ring-1 ring-sky-200" : "border-black/10 bg-white/80"
+                }`}
+                onClick={() => onCardOrientationChange(card.id, o)}
+              >
+                {o === "landscape" ? "10×15" : "15×10"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="flex items-center gap-1">
+          <input
+            type="color"
+            value={card.paddingColor}
+            onChange={(e) => onCardColorChange(card.id, e.target.value)}
+            className="w-8 h-8 rounded-full border border-black/10 bg-white"
+            aria-label="Custom card color"
+          />
+        </label>
+      </div>
+    <div
+      className="relative w-full border border-black/5 overflow-hidden"
+      ref={containerRef}
+      style={{
+        aspectRatio: `${cardSize.width} / ${cardSize.height}`,
+        borderRadius: `${CARD_RADIUS}px`,
+        backgroundColor: card.paddingColor,
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.6)"
+      }}
+    >
+      {card.slots.map((slot, slotIndex) => {
+        const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding);
+        const left = metrics.x * scale;
+        const top = metrics.y * scale;
+        const width = metrics.outerW * scale;
+        const height = metrics.outerH * scale;
+        const padPx = metrics.pad * scale;
+        const innerW = metrics.innerW * scale;
+        const innerH = metrics.innerH * scale;
+        const placement = getImagePlacement(slot, metrics);
+        const drawWPx = placement ? placement.drawW * scale : 0;
+        const drawHPx = placement ? placement.drawH * scale : 0;
+        const drawLeft = placement ? placement.innerLeft * scale : 0;
+        const drawTop = placement ? placement.innerTop * scale : 0;
+        const rotation = slot.rotationDeg || 0;
 
           return (
             <div
               key={slot.id}
-              className={`absolute transition ${selectedSlotId === slot.id ? "ring-2 ring-slate-500/50" : ""}`}
-              style={{ left, top, width, height }}
-              onClick={() => handleSlotClick(slot.id)}
+              className="absolute transition"
+              style={{
+                left,
+                top,
+                width,
+                height,
+                cursor: selectedImageId ? "copy" : "pointer"
+              }}
+              onClick={() => {
+                if (selectedImageId) {
+                  onPlaceImage(card.id, slot.id, selectedImageId);
+                  onSlotSelectImage(null);
+                }
+              }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => handleDropOnSlot(slot.id, e)}
             >
-              <div
-                className="relative w-full h-full"
-                style={{
-                  padding: padPx,
-                  backgroundColor: paddingColor
-                }}
-              >
+              <div className="relative w-full h-full" style={{ backgroundColor: card.paddingColor }}>
                 <div
-                  className="absolute inset-0 overflow-hidden"
+                  className="absolute"
                   style={{
+                    left: padPx,
+                    top: padPx,
+                    width: innerW,
+                    height: innerH,
+                    overflow: "hidden",
                     borderRadius: `${rounding}px`,
-                    boxShadow: shadow ? `0 ${shadow * 0.35}px ${shadow}px rgba(0,0,0,0.08)` : "none",
                     background: slot.image ? "transparent" : "rgba(255,255,255,0.6)"
                   }}
                 >
-                  {slot.image ? (
+                  {!slot.image && selectedImage && (
                     <div
-                      className="absolute top-0 left-0 bg-cover bg-center"
+                      className="absolute inset-0 bg-center bg-cover opacity-30 pointer-events-none transition"
+                      style={{ backgroundImage: `url(${selectedImage.url})` }}
+                    />
+                  )}
+                  {slot.image ? (
+                    <img
+                      src={slot.image.url}
+                      alt={slot.image.name}
+                      draggable={false}
+                      className="absolute cursor-grab active:cursor-grabbing touch-none select-none"
                       style={{
                         width: drawWPx,
                         height: drawHPx,
-                        transform: `translate(${drawLeft}px, ${drawTop}px) rotate(${rotation}deg)`,
+                        left: drawLeft,
+                        top: drawTop,
+                        transform: `rotate(${rotation}deg)`,
                         transformOrigin: "center center",
-                        backgroundImage: `url(${slot.image.url})`
+                        borderRadius: `${rounding}px`,
+                        objectFit: "cover"
                       }}
-                      onPointerDown={(e) => handlePointerDown(e, slotIndex, slot.id)}
-                      onPointerMove={(e) => handlePointerMove(e, slotIndex, slot.id)}
-                      onPointerUp={handlePointerUp}
-                      onPointerLeave={handlePointerUp}
+                      onPointerDown={(e) => {
+                        if (!placement) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                        const start = {
+                          x: e.clientX,
+                          y: e.clientY,
+                          offsetX: placement.offsetX,
+                          offsetY: placement.offsetY
+                        };
+                        const handleMove = (ev: PointerEvent) => {
+                          const dx = (ev.clientX - start.x) / scale;
+                          const dy = (ev.clientY - start.y) / scale;
+                          const nextX = clamp(
+                            start.offsetX + dx,
+                            -placement.maxOffsetX,
+                            placement.maxOffsetX
+                          );
+                          const nextY = clamp(
+                            start.offsetY + dy,
+                            -placement.maxOffsetY,
+                            placement.maxOffsetY
+                          );
+                          onSlotChange(card.id, slot.id, { offsetX: nextX, offsetY: nextY });
+                        };
+                        const handleUp = (ev: PointerEvent) => {
+                          (e.target as HTMLElement).releasePointerCapture(ev.pointerId);
+                          window.removeEventListener("pointermove", handleMove);
+                          window.removeEventListener("pointerup", handleUp);
+                          window.removeEventListener("pointercancel", handleUp);
+                        };
+                        window.addEventListener("pointermove", handleMove);
+                        window.addEventListener("pointerup", handleUp);
+                        window.addEventListener("pointercancel", handleUp);
+                      }}
                     />
                   ) : (
                     <div className="w-full h-full grid place-items-center text-xs font-semibold text-slate-600">
@@ -935,6 +1106,7 @@ function CardEditor({
                     <div className="absolute top-2 right-2 flex gap-1">
                       <button
                         className="px-1.5 py-1 text-[11px] rounded-md bg-white/90 border border-black/10"
+                        title="Rotate left"
                         onClick={(e) => {
                           e.stopPropagation();
                           onSlotChange(card.id, slot.id, {
@@ -946,6 +1118,7 @@ function CardEditor({
                       </button>
                       <button
                         className="px-1.5 py-1 text-[11px] rounded-md bg-white/90 border border-black/10"
+                        title="Rotate right"
                         onClick={(e) => {
                           e.stopPropagation();
                           onSlotChange(card.id, slot.id, {
@@ -957,12 +1130,23 @@ function CardEditor({
                       </button>
                       <button
                         className="px-1.5 py-1 text-[11px] rounded-md bg-white/90 border border-black/10"
+                        title="Center"
                         onClick={(e) => {
                           e.stopPropagation();
                           onSlotChange(card.id, slot.id, { offsetX: 0, offsetY: 0 });
                         }}
                       >
-                        Center
+                        ⊕
+                      </button>
+                      <button
+                        className="px-1.5 py-1 text-[11px] rounded-md bg-white/90 border border-black/10 text-rose-600"
+                        title="Clear"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSlotClear(card.id, slot.id);
+                        }}
+                      >
+                        ×
                       </button>
                     </div>
                   )}
@@ -972,33 +1156,6 @@ function CardEditor({
           );
         })}
       </div>
-      <div className="text-xs text-slate-600 mt-2">
-        Drag inside a slot to pan. Tap a library item then tap a slot on touch devices.
-      </div>
-      {selectedSlot && selectedSlot.image && (
-        <div className="mt-3 flex flex-col gap-2 rounded-xl border border-black/5 bg-white/80 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">Slot controls</p>
-              <p className="text-xs text-slate-600">Reset/clear</p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                className="px-3 py-1.5 text-xs rounded-lg border border-black/10"
-                onClick={() => onSlotChange(card.id, selectedSlot.id, { offsetX: 0, offsetY: 0 })}
-              >
-                Reset
-              </button>
-              <button
-                className="px-3 py-1.5 text-xs rounded-lg border border-black/10"
-                onClick={() => onSlotClear(card.id, selectedSlot.id)}
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1008,19 +1165,15 @@ type AddCardButtonProps = {
   size: { width: number; height: number };
   paddingColor: string;
   rounding: number;
-  shadow: number;
 };
 
-function AddCardButton({ onAdd, size, paddingColor, rounding, shadow }: AddCardButtonProps) {
+function AddCardButton({ onAdd, size, paddingColor, rounding }: AddCardButtonProps) {
   return (
     <button
       className="w-full border border-dashed border-slate-300 text-slate-600 rounded-2xl bg-white/70 hover:bg-white transition"
       style={{
         aspectRatio: `${size.width} / ${size.height}`,
-        borderRadius: `${rounding + 8}px`,
-        boxShadow: shadow
-          ? `0 ${shadow * 0.4}px ${shadow}px rgba(0,0,0,0.08), inset 0 0 0 1px rgba(255,255,255,0.6)`
-          : "inset 0 0 0 1px rgba(255,255,255,0.6)",
+        borderRadius: `${CARD_RADIUS}px`,
         backgroundColor: paddingColor
       }}
       onClick={onAdd}
@@ -1031,6 +1184,70 @@ function AddCardButton({ onAdd, size, paddingColor, rounding, shadow }: AddCardB
       </div>
     </button>
   );
+}
+
+type CardThumbnailProps = {
+  card: Card;
+  padding: number;
+  rounding: number;
+};
+
+function CardThumbnail({ card, padding, rounding }: CardThumbnailProps) {
+  const cardSize = getScaledCardSize(card, padding);
+  const scaledPadding = padding * cardSize.scale;
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const width = cardSize.width;
+    const height = cardSize.height;
+    const scale = 150 / width; // scale down to about 150px wide
+    const viewW = width * scale;
+    const viewH = height * scale;
+    canvas.width = viewW;
+    canvas.height = viewH;
+
+    ctx.fillStyle = card.paddingColor;
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    card.slots.forEach((slot, slotIndex) => {
+      if (!slot.image) return;
+      const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding);
+      const placement = getImagePlacement(slot, metrics);
+      if (!placement) return;
+      const innerW = metrics.innerW * scale;
+      const innerH = metrics.innerH * scale;
+      const drawW = placement.drawW * scale;
+      const drawH = placement.drawH * scale;
+      const centerX = (metrics.x + metrics.pad + placement.innerLeft + placement.drawW / 2) * scale;
+      const centerY = (metrics.y + metrics.pad + placement.innerTop + placement.drawH / 2) * scale;
+      const rotation = ((slot.rotationDeg || 0) * Math.PI) / 180;
+      ctx.save();
+      roundRect(
+        ctx,
+        metrics.x * scale + metrics.pad * scale,
+        metrics.y * scale + metrics.pad * scale,
+        innerW,
+        innerH,
+        rounding
+      );
+      ctx.clip();
+      ctx.translate(centerX, centerY);
+      ctx.rotate(rotation);
+      ctx.drawImage(slot.image.image, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.restore();
+    });
+
+    ctx.strokeStyle = "rgba(20, 20, 20, 0.08)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, viewW - 1, viewH - 1);
+  }, [card, cardSize.height, cardSize.width, padding, rounding]);
+
+  return <canvas ref={canvasRef} className="w-full h-auto" aria-hidden />;
 }
 
 export default App;

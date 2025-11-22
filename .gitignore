@@ -1,16 +1,26 @@
+# Node / build outputs
 node_modules
 app/node_modules
 dist
 app/dist
-.DS_Store
+.parcel-cache
+.vite
+
+# Logs
 npm-debug.log*
-pnpm-debug.log*
 yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor / system
+.DS_Store
+*.swp
+*.swo
+.idea
+.vscode
+
+# Env / misc
+.env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.eslintcache
-.vscode/
-.idea/
-*.log
+.env.*.local
+*.tsbuildinfo
