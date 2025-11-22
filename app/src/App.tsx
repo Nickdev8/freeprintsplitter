@@ -306,13 +306,6 @@ function App() {
     );
   };
 
-  const clearAll = () => {
-    images.forEach((img) => URL.revokeObjectURL(img.url));
-    setImages([]);
-    setCards([createEmptyCard()]);
-    setSelectedImageId(null);
-  };
-
   const autoFill = () => {
     if (isFilling) return;
     const used = new Set(imageUsage.keys());
@@ -488,14 +481,6 @@ function App() {
             Pick images on the left, drop or tap them into the card slots, then drag and scale inside
             the masked area. Defaults are tuned for 4:3 photos; add more cards as you fill four slots.
           </p>
-          <div className="flex flex-wrap gap-3">
-            <button
-              className="px-4 py-3 rounded-2xl border border-black/10 text-slate-800 bg-slate-100 hover:-translate-y-0.5 transition"
-              onClick={clearAll}
-            >
-              Clear all
-            </button>
-          </div>
         </div>
         <div className="grid grid-cols-3 gap-3 glass rounded-2xl p-4">
           <Stat label="Library" primary={`${images.length}`} secondary={`${cards.length} card(s)`} />
