@@ -90,6 +90,37 @@ function getScaledCardSize(card: Card, padding: number) {
   };
 }
 
+function averageColorFromCard(card: Card): string | null {
+  const imgs = card.slots.map((s) => s.image).filter(Boolean) as LoadedImage[];
+  if (imgs.length === 0) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = 10;
+  canvas.height = 10;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+
+  imgs.forEach((img) => {
+    ctx.clearRect(0, 0, 10, 10);
+    ctx.drawImage(img.image, 0, 0, 10, 10);
+    const data = ctx.getImageData(0, 0, 10, 10).data;
+    for (let i = 0; i < data.length; i += 4) {
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      count += 1;
+    }
+  });
+
+  if (count === 0) return null;
+  const toHex = (v: number) => Math.round(v / count).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
 async function loadImages(files: FileList) {
   const list = Array.from(files).filter((file) => file.type.startsWith("image/"));
   const promises = list.map(
@@ -963,6 +994,16 @@ function CardEditor({
             aria-label="Custom card color"
           />
         </label>
+        <button
+          className="px-2 py-1 text-[11px] rounded-lg border border-black/10 bg-white/90 disabled:opacity-50"
+          disabled={!card.slots.some((s) => s.image)}
+          onClick={() => {
+            const avg = averageColorFromCard(card);
+            if (avg) onCardColorChange(card.id, avg);
+          }}
+        >
+          Auto color
+        </button>
       </div>
     <div
       className="relative w-full border border-black/5 overflow-hidden"
