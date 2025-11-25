@@ -23,19 +23,36 @@ type Card = {
   id: string;
   paddingColor: string;
   orientation: "landscape" | "portrait";
+  layout: LayoutKey;
   slots: Slot[];
 };
 
 const CM_WIDTH = 15;
 const CM_HEIGHT = 10;
 const DPI = 300;
-const SLOT_COUNT = 4;
-const SLOTS_PER_ROW = 2;
 const CARD_RADIUS = 0;
 const MAX_CARD_SCALE = 4;
 const DEFAULT_PADDING = 18;
 const DEFAULT_PADDING_COLOR = "#f4edde";
 const DEFAULT_ROUNDING = 12;
+
+type LayoutKey = "2x2" | "2x3" | "3x3";
+type LayoutPreset = {
+  key: LayoutKey;
+  cols: number;
+  rows: number;
+  slots: number;
+  label: string;
+  description: string;
+};
+
+const layoutPresets: Record<LayoutKey, LayoutPreset> = {
+  "2x2": { key: "2x2", cols: 2, rows: 2, slots: 4, label: "2×2", description: "Four-up" },
+  "2x3": { key: "2x3", cols: 2, rows: 3, slots: 6, label: "2×3", description: "Six-up" },
+  "3x3": { key: "3x3", cols: 3, rows: 3, slots: 9, label: "3×3", description: "Nine-up" }
+};
+
+const getLayout = (key: LayoutKey) => layoutPresets[key] || layoutPresets["2x2"];
 
 const colorPresets = [
   { label: "Soft cream", value: "#f4edde" },
@@ -64,7 +81,8 @@ const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(
 
 function getCardScale(card: Card, padding: number) {
   const baseSize = getSizeForOrientation(card.orientation);
-  const metrics = getSlotMetrics(0, baseSize, padding);
+  const layout = getLayout(card.layout);
+  const metrics = getSlotMetrics(0, baseSize, padding, layout);
   const innerW = metrics.innerW;
   const innerH = metrics.innerH;
   let maxW = 0;
@@ -164,9 +182,14 @@ type SlotMetrics = {
   pad: number;
 };
 
-function getSlotMetrics(index: number, size: { width: number; height: number }, padding: number) {
-  const cols = SLOTS_PER_ROW;
-  const rows = SLOT_COUNT / cols;
+function getSlotMetrics(
+  index: number,
+  size: { width: number; height: number },
+  padding: number,
+  layout: LayoutPreset
+) {
+  const cols = layout.cols;
+  const rows = layout.rows;
   const outerW = size.width / cols;
   const outerH = size.height / rows;
   const col = index % cols;
@@ -183,11 +206,21 @@ function getSlotMetrics(index: number, size: { width: number; height: number }, 
 
 function getImagePlacement(slot: Slot, metrics: ReturnType<typeof getSlotMetrics>) {
   if (!slot.image) return null;
-  const baseScale = Math.max(metrics.innerW / slot.image.width, metrics.innerH / slot.image.height);
-  const drawW = slot.image.width * baseScale;
-  const drawH = slot.image.height * baseScale;
-  const maxOffsetX = Math.max(0, (drawW - metrics.innerW) / 2);
-  const maxOffsetY = Math.max(0, (drawH - metrics.innerH) / 2);
+  const rotation = (slot.rotationDeg || 0) * (Math.PI / 180);
+  const cos = Math.abs(Math.cos(rotation));
+  const sin = Math.abs(Math.sin(rotation));
+
+  const denomW = cos * slot.image.width + sin * slot.image.height;
+  const denomH = sin * slot.image.width + cos * slot.image.height;
+  const coverScale = Math.max(metrics.innerW / denomW, metrics.innerH / denomH);
+
+  const drawW = slot.image.width * coverScale;
+  const drawH = slot.image.height * coverScale;
+  const rotatedW = drawW * cos + drawH * sin;
+  const rotatedH = drawW * sin + drawH * cos;
+
+  const maxOffsetX = Math.max(0, (rotatedW - metrics.innerW) / 2);
+  const maxOffsetY = Math.max(0, (rotatedH - metrics.innerH) / 2);
   const clampedX = clamp(slot.offsetX ?? 0, -maxOffsetX, maxOffsetX);
   const clampedY = clamp(slot.offsetY ?? 0, -maxOffsetY, maxOffsetY);
   const innerLeft = metrics.innerW / 2 + clampedX - drawW / 2;
@@ -204,17 +237,43 @@ function getImagePlacement(slot: Slot, metrics: ReturnType<typeof getSlotMetrics
   };
 }
 
+function coverScaleForRotation(image: LoadedImage, metrics: SlotMetrics, rotationDeg: number) {
+  const radians = rotationDeg * (Math.PI / 180);
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  const denomW = cos * image.width + sin * image.height;
+  const denomH = sin * image.width + cos * image.height;
+  return Math.max(metrics.innerW / denomW, metrics.innerH / denomH);
+}
+
+function getAutoRotationDeg(image: LoadedImage, metrics: SlotMetrics) {
+  const scale0 = coverScaleForRotation(image, metrics, 0);
+  const scale90 = coverScaleForRotation(image, metrics, 90);
+  return scale0 <= scale90 ? 0 : 90;
+}
+
+const createSlots = (count: number) =>
+  Array.from({ length: count }, () => ({
+    id: `slot-${buildId()}`,
+    rotationDeg: 0,
+    offsetX: 0,
+    offsetY: 0
+  }));
+
+const syncSlotsToLayout = (slots: Slot[], layout: LayoutPreset) => {
+  if (slots.length === layout.slots) return slots;
+  if (slots.length > layout.slots) return slots.slice(0, layout.slots);
+  return [...slots, ...createSlots(layout.slots - slots.length)];
+};
+
 function createEmptyCard(): Card {
+  const layout = getLayout("2x2");
   return {
     id: `card-${buildId()}`,
     paddingColor: DEFAULT_PADDING_COLOR,
     orientation: "landscape",
-    slots: Array.from({ length: SLOT_COUNT }, () => ({
-      id: `slot-${buildId()}`,
-      rotationDeg: 0,
-      offsetX: 0,
-      offsetY: 0
-    }))
+    layout: layout.key,
+    slots: createSlots(layout.slots)
   };
 }
 
@@ -350,15 +409,24 @@ function App() {
         slots: card.slots.map((slot) => ({ ...slot }))
       }));
 
+      const resolveMetrics = (card: Card, slotIndex: number) => {
+        const layout = getLayout(card.layout);
+        const size = getSizeForOrientation(card.orientation);
+        return getSlotMetrics(slotIndex, size, padding, layout);
+      };
+
       let idx = 0;
       // Fill existing empty slots first.
       for (const card of nextCards) {
-        for (const slot of card.slots) {
+        for (let slotIndex = 0; slotIndex < card.slots.length; slotIndex += 1) {
+          const slot = card.slots[slotIndex];
           if (idx >= queue.length) break;
           if (!slot.image) {
             const img = queue[idx++];
+            const metrics = resolveMetrics(card, slotIndex);
+            const rotationDeg = getAutoRotationDeg(img, metrics);
             slot.image = img;
-            slot.rotationDeg = 0;
+            slot.rotationDeg = rotationDeg;
             slot.offsetX = 0;
             slot.offsetY = 0;
           }
@@ -370,8 +438,10 @@ function App() {
         const newCard = createEmptyCard();
         for (let s = 0; s < newCard.slots.length && idx < queue.length; s += 1) {
           const img = queue[idx++];
+          const metrics = resolveMetrics(newCard, s);
+          const rotationDeg = getAutoRotationDeg(img, metrics);
           newCard.slots[s].image = img;
-          newCard.slots[s].rotationDeg = 0;
+          newCard.slots[s].rotationDeg = rotationDeg;
           newCard.slots[s].offsetX = 0;
           newCard.slots[s].offsetY = 0;
         }
@@ -395,6 +465,17 @@ function App() {
     );
   };
 
+  const setCardLayout = (cardId: string, layout: LayoutKey) => {
+    const preset = getLayout(layout);
+    setCards((prev) =>
+      prev.map((card) =>
+        card.id === cardId
+          ? { ...card, layout: preset.key, slots: syncSlotsToLayout(card.slots, preset) }
+          : card
+      )
+    );
+  };
+
   const setCardOrientation = (cardId: string, orientation: "landscape" | "portrait") => {
     setCards((prev) =>
       prev.map((card) => (card.id === cardId ? { ...card, orientation } : card))
@@ -409,6 +490,7 @@ function App() {
   const renderCardToBlob = async (card: Card): Promise<Blob | null> => {
     const cardSize = getScaledCardSize(card, padding);
     const scaledPadding = padding * cardSize.scale;
+    const layout = getLayout(card.layout);
     const canvas = document.createElement("canvas");
     canvas.width = cardSize.width;
     canvas.height = cardSize.height;
@@ -420,7 +502,7 @@ function App() {
 
     card.slots.forEach((slot, slotIndex) => {
       if (!slot.image) return;
-      const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding);
+      const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding, layout);
       const placement = getImagePlacement(slot, metrics);
       if (!placement) return;
       const centerX = metrics.x + metrics.pad + placement.innerLeft + placement.drawW / 2;
@@ -503,14 +585,14 @@ function App() {
             Tiny-glade like controls · 10×15 cm
           </p>
           <h1 className="text-3xl sm:text-4xl lg:text-5xl font-display leading-tight">
-            Drag photos into four slots per card,
+            Drag photos into card slots,
             <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-gradient-to-r from-amber-200 to-sky-200 ml-2">
               then sculpt.
             </span>
           </h1>
           <p className="text-slate-700 max-w-2xl">
             Pick images on the left, drop or tap them into the card slots, then drag and scale inside
-            the masked area. Defaults are tuned for 4:3 photos; add more cards as you fill four slots.
+            the masked area. Defaults are tuned for 4:3 photos; choose 2×2, 2×3, or 3×3 layouts per card.
           </p>
         </div>
         <div className="grid grid-cols-3 gap-3 glass rounded-2xl p-4">
@@ -520,7 +602,7 @@ function App() {
             primary={`${padding.toFixed(0)} px`}
             secondary={`${paddingInMm.toFixed(1)} mm`}
           />
-          <Stat label="Per card" primary="4 slots" secondary="2 × 2 grid" />
+          <Stat label="Layouts" primary="2×2 · 2×3 · 3×3" secondary="Pick per card" />
         </div>
       </header>
 
@@ -655,7 +737,7 @@ function App() {
               <div>
                 <p className="font-semibold">Card slots</p>
                 <p className="text-xs text-slate-600">
-                  Drop images or tap-select to fill slots. Drag inside to pan; adjust size per slot. Fit is cover-biased for 4:3 photos.
+                  Pick a 2×2, 2×3, or 3×3 grid per card. Drop images or tap-select to fill slots. Drag inside to pan; adjust size per slot. Fit is cover-biased for 4:3 photos.
                 </p>
               </div>
               <div className="flex gap-2">
@@ -686,6 +768,7 @@ function App() {
             }
             onAddCard={() => setCards((prev) => [...prev, createEmptyCard()])}
             onCardColorChange={setCardColor}
+            onCardLayoutChange={setCardLayout}
             onCardOrientationChange={setCardOrientation}
             totalCards={cards.length}
           />
@@ -818,6 +901,7 @@ type CardStackProps = {
   onRemoveCard: (cardId: string) => void;
   onAddCard: () => void;
   onCardColorChange: (cardId: string, value: string) => void;
+  onCardLayoutChange: (cardId: string, layout: LayoutKey) => void;
   onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
   totalCards: number;
 };
@@ -835,6 +919,7 @@ function CardStack({
   onRemoveCard,
   onAddCard,
   onCardColorChange,
+  onCardLayoutChange,
   onCardOrientationChange,
   totalCards
 }: CardStackProps) {
@@ -859,6 +944,7 @@ function CardStack({
           onSlotClear={onSlotClear}
           onRemoveCard={onRemoveCard}
           onCardColorChange={onCardColorChange}
+          onCardLayoutChange={onCardLayoutChange}
           onCardOrientationChange={onCardOrientationChange}
         />
       ))}
@@ -881,6 +967,7 @@ type CardEditorProps = {
   onSlotClear: (cardId: string, slotId: string) => void;
   onRemoveCard: (cardId: string) => void;
   onCardColorChange: (cardId: string, value: string) => void;
+  onCardLayoutChange: (cardId: string, layout: LayoutKey) => void;
   onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
 };
 
@@ -897,6 +984,7 @@ function CardEditor({
   onSlotClear,
   onRemoveCard,
   onCardColorChange,
+  onCardLayoutChange,
   onCardOrientationChange,
   totalCards
 }: CardEditorProps) {
@@ -921,6 +1009,7 @@ function CardEditor({
 
   const cardSize = getScaledCardSize(card, padding);
   const scaledPadding = padding * cardSize.scale;
+  const layout = getLayout(card.layout);
   const scaleX = bounds.width ? bounds.width / cardSize.width : 1;
   const scaleY = bounds.height ? bounds.height / cardSize.height : 1;
   const scale = Math.min(scaleX || 1, scaleY || 1);
@@ -940,7 +1029,7 @@ function CardEditor({
         <div className="flex items-center gap-2">
           <span className="text-xs">
             {card.orientation === "landscape" ? "10×15 cm" : "15×10 cm"} · {cardSize.width}×
-            {cardSize.height}px
+            {cardSize.height}px · {layout.label} grid
           </span>
           {index > 0 && (
             <button
@@ -952,11 +1041,11 @@ function CardEditor({
           )}
         </div>
       </div>
-        <div className="flex flex-wrap items-center gap-2 mb-3 text-xs text-slate-600">
-          <span>Card color</span>
-          <div className="flex flex-wrap gap-1">
-            {colorPresets.map((preset) => (
-              <button
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-xs text-slate-600">
+        <span>Card color</span>
+        <div className="flex flex-wrap gap-1">
+          {colorPresets.map((preset) => (
+            <button
               key={preset.value + card.id}
               className={`w-7 h-7 rounded-full border ${
                 card.paddingColor.toLowerCase() === preset.value.toLowerCase()
@@ -968,22 +1057,6 @@ function CardEditor({
               title={preset.label}
             />
           ))}
-        </div>
-        <div className="flex items-center gap-2 ml-auto">
-          <span className="text-xs text-slate-600">Orientation</span>
-          <div className="flex gap-1">
-            {(["landscape", "portrait"] as const).map((o) => (
-              <button
-                key={o}
-                className={`px-2 py-1 text-[11px] rounded-lg border ${
-                  card.orientation === o ? "border-sky-300 bg-white ring-1 ring-sky-200" : "border-black/10 bg-white/80"
-                }`}
-                onClick={() => onCardOrientationChange(card.id, o)}
-              >
-                {o === "landscape" ? "10×15" : "15×10"}
-              </button>
-            ))}
-          </div>
         </div>
         <label className="flex items-center gap-1">
           <input
@@ -1004,6 +1077,42 @@ function CardEditor({
         >
           Auto color
         </button>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-600">Layout</span>
+          <div className="flex gap-1">
+            {Object.values(layoutPresets).map((preset) => (
+              <button
+                key={preset.key}
+                className={`px-2 py-1 text-[11px] rounded-lg border ${
+                  card.layout === preset.key
+                    ? "border-sky-300 bg-white ring-1 ring-sky-200"
+                    : "border-black/10 bg-white/80"
+                }`}
+                onClick={() => onCardLayoutChange(card.id, preset.key)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-600">Orientation</span>
+          <div className="flex gap-1">
+            {(["landscape", "portrait"] as const).map((o) => (
+              <button
+                key={o}
+                className={`px-2 py-1 text-[11px] rounded-lg border ${
+                  card.orientation === o
+                    ? "border-sky-300 bg-white ring-1 ring-sky-200"
+                    : "border-black/10 bg-white/80"
+                }`}
+                onClick={() => onCardOrientationChange(card.id, o)}
+              >
+                {o === "landscape" ? "10×15" : "15×10"}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     <div
       className="relative w-full border border-black/5 overflow-hidden"
@@ -1016,7 +1125,7 @@ function CardEditor({
       }}
     >
       {card.slots.map((slot, slotIndex) => {
-        const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding);
+        const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding, layout);
         const left = metrics.x * scale;
         const top = metrics.y * scale;
         const width = metrics.outerW * scale;
@@ -1211,6 +1320,7 @@ type CardThumbnailProps = {
 function CardThumbnail({ card, padding, rounding }: CardThumbnailProps) {
   const cardSize = getScaledCardSize(card, padding);
   const scaledPadding = padding * cardSize.scale;
+  const layout = getLayout(card.layout);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -1232,7 +1342,7 @@ function CardThumbnail({ card, padding, rounding }: CardThumbnailProps) {
 
     card.slots.forEach((slot, slotIndex) => {
       if (!slot.image) return;
-      const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding);
+      const metrics = getSlotMetrics(slotIndex, cardSize, scaledPadding, layout);
       const placement = getImagePlacement(slot, metrics);
       if (!placement) return;
       const innerW = metrics.innerW * scale;
