@@ -27,6 +27,11 @@ type Card = {
   slots: Slot[];
 };
 
+type ExportSize = {
+  width: number;
+  height: number;
+};
+
 const CM_WIDTH = 15;
 const CM_HEIGHT = 10;
 const DPI = 300;
@@ -35,6 +40,9 @@ const MAX_CARD_SCALE = 4;
 const DEFAULT_PADDING = 18;
 const DEFAULT_PADDING_COLOR = "#f4edde";
 const DEFAULT_ROUNDING = 12;
+const DEFAULT_MAX_EXPORT_SIZE: ExportSize = { width: 6000, height: 4000 };
+const MIN_EXPORT_SIZE = 500;
+const MAX_EXPORT_SIZE = 12000;
 
 type LayoutKey = "2x2" | "2x3" | "3x3";
 type LayoutPreset = {
@@ -77,6 +85,14 @@ const PORTRAIT_SIZE = {
 const getSizeForOrientation = (orientation: "landscape" | "portrait") =>
   orientation === "landscape" ? LANDSCAPE_SIZE : PORTRAIT_SIZE;
 
+const getMaxSizeForOrientation = (maxSize: ExportSize, orientation: "landscape" | "portrait") =>
+  orientation === "landscape"
+    ? maxSize
+    : {
+        width: maxSize.height,
+        height: maxSize.width
+      };
+
 const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
 
 function getCardScale(card: Card, padding: number) {
@@ -98,13 +114,19 @@ function getCardScale(card: Card, padding: number) {
   return clamp(scaleNeeded, 1, MAX_CARD_SCALE);
 }
 
-function getScaledCardSize(card: Card, padding: number) {
+function getScaledCardSize(card: Card, padding: number, maxSize: ExportSize = DEFAULT_MAX_EXPORT_SIZE) {
   const base = getSizeForOrientation(card.orientation);
   const scale = getCardScale(card, padding);
+  const maxForOrientation = getMaxSizeForOrientation(maxSize, card.orientation);
+  const maxWidthScale = maxForOrientation.width > 0 ? maxForOrientation.width / base.width : Infinity;
+  const maxHeightScale = maxForOrientation.height > 0 ? maxForOrientation.height / base.height : Infinity;
+  const allowedScale = Math.min(MAX_CARD_SCALE, maxWidthScale, maxHeightScale);
+  const minScale = Math.min(1, allowedScale);
+  const finalScale = clamp(scale, minScale, allowedScale);
   return {
-    width: Math.round(base.width * scale),
-    height: Math.round(base.height * scale),
-    scale
+    width: Math.round(base.width * finalScale),
+    height: Math.round(base.height * finalScale),
+    scale: finalScale
   };
 }
 
@@ -302,6 +324,7 @@ function App() {
   const [cards, setCards] = useState<Card[]>([createEmptyCard()]);
   const [padding, setPadding] = useState(DEFAULT_PADDING);
   const [rounding, setRounding] = useState(DEFAULT_ROUNDING);
+  const [maxExportSize, setMaxExportSize] = useState<ExportSize>({ ...DEFAULT_MAX_EXPORT_SIZE });
   const [hovering, setHovering] = useState(false);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [isFilling, setIsFilling] = useState(false);
@@ -327,6 +350,15 @@ function App() {
     },
     []
   );
+
+  const setMaxExportDimension = (key: keyof ExportSize, value: number) => {
+    const numeric = Number(value);
+    const safeValue = Number.isFinite(numeric) ? numeric : DEFAULT_MAX_EXPORT_SIZE[key];
+    const clamped = clamp(Math.round(safeValue), MIN_EXPORT_SIZE, MAX_EXPORT_SIZE);
+    setMaxExportSize((prev) => ({ ...prev, [key]: clamped }));
+  };
+
+  const resetMaxExportSize = () => setMaxExportSize({ ...DEFAULT_MAX_EXPORT_SIZE });
 
   const handleFiles = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -454,6 +486,7 @@ function App() {
   };
 
   const paddingInMm = (padding / DPI) * 25.4;
+  const exportSizeLabel = formatSize(maxExportSize.width, maxExportSize.height);
   const resetStyling = () => {
     setPadding(DEFAULT_PADDING);
     setRounding(DEFAULT_ROUNDING);
@@ -488,7 +521,7 @@ function App() {
   };
 
   const renderCardToBlob = async (card: Card): Promise<Blob | null> => {
-    const cardSize = getScaledCardSize(card, padding);
+    const cardSize = getScaledCardSize(card, padding, maxExportSize);
     const scaledPadding = padding * cardSize.scale;
     const layout = getLayout(card.layout);
     const canvas = document.createElement("canvas");
@@ -602,7 +635,7 @@ function App() {
             primary={`${padding.toFixed(0)} px`}
             secondary={`${paddingInMm.toFixed(1)} mm`}
           />
-          <Stat label="Layouts" primary="2×2 · 2×3 · 3×3" secondary="Pick per card" />
+          <Stat label="Max export" primary={`${exportSizeLabel}px`} secondary="Landscape cap" />
         </div>
       </header>
 
@@ -659,6 +692,60 @@ function App() {
                 onChange={(v) => setRounding(v)}
                 onReset={rounding !== DEFAULT_ROUNDING ? () => setRounding(DEFAULT_ROUNDING) : undefined}
               />
+              <div className="rounded-xl border border-black/10 bg-white/70 px-3 py-2 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">Max export size</p>
+                    <p className="text-xs text-slate-600">
+                      Caps PNG output (landscape); portrait swaps these values.
+                    </p>
+                  </div>
+                  <button
+                    className="px-2 py-1 text-[11px] rounded-lg border border-black/10 bg-white disabled:opacity-50"
+                    onClick={resetMaxExportSize}
+                    disabled={
+                      maxExportSize.width === DEFAULT_MAX_EXPORT_SIZE.width &&
+                      maxExportSize.height === DEFAULT_MAX_EXPORT_SIZE.height
+                    }
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-xs text-slate-600">
+                    W
+                    <input
+                      type="number"
+                      min={MIN_EXPORT_SIZE}
+                      max={MAX_EXPORT_SIZE}
+                      step={50}
+                      value={maxExportSize.width}
+                      onChange={(e) => setMaxExportDimension("width", Number(e.target.value))}
+                      className="w-24 rounded-lg border border-black/10 px-2 py-1 text-sm text-slate-800"
+                      aria-label="Max export width"
+                    />
+                  </label>
+                  <span className="text-xs text-slate-500">×</span>
+                  <label className="flex items-center gap-1 text-xs text-slate-600">
+                    H
+                    <input
+                      type="number"
+                      min={MIN_EXPORT_SIZE}
+                      max={MAX_EXPORT_SIZE}
+                      step={50}
+                      value={maxExportSize.height}
+                      onChange={(e) => setMaxExportDimension("height", Number(e.target.value))}
+                      className="w-24 rounded-lg border border-black/10 px-2 py-1 text-sm text-slate-800"
+                      aria-label="Max export height"
+                    />
+                  </label>
+                  <span className="text-xs text-slate-600">px</span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  Current cap: {exportSizeLabel} (landscape). Portrait exports cap at{" "}
+                  {formatSize(maxExportSize.height, maxExportSize.width)}.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -770,6 +857,7 @@ function App() {
             onCardColorChange={setCardColor}
             onCardLayoutChange={setCardLayout}
             onCardOrientationChange={setCardOrientation}
+            maxExportSize={maxExportSize}
             totalCards={cards.length}
           />
           </div>
@@ -794,7 +882,7 @@ function App() {
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {cards.map((card, index) => {
-            const cardSize = getScaledCardSize(card, padding);
+            const cardSize = getScaledCardSize(card, padding, maxExportSize);
             return (
               <div
                 key={`gallery-${card.id}`}
@@ -808,7 +896,12 @@ function App() {
                   </span>
                 </div>
                 <div className="w-full aspect-[3/2] rounded-lg overflow-hidden border border-black/10 bg-white">
-                  <CardThumbnail card={card} padding={padding} rounding={rounding} />
+                  <CardThumbnail
+                    card={card}
+                    padding={padding}
+                    rounding={rounding}
+                    maxExportSize={maxExportSize}
+                  />
                 </div>
                 <button
                   className="px-3 py-2 text-xs rounded-lg border border-black/10 bg-white hover:-translate-y-0.5 transition"
@@ -903,6 +996,7 @@ type CardStackProps = {
   onCardColorChange: (cardId: string, value: string) => void;
   onCardLayoutChange: (cardId: string, layout: LayoutKey) => void;
   onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
+  maxExportSize: ExportSize;
   totalCards: number;
 };
 
@@ -921,6 +1015,7 @@ function CardStack({
   onCardColorChange,
   onCardLayoutChange,
   onCardOrientationChange,
+  maxExportSize,
   totalCards
 }: CardStackProps) {
   return (
@@ -946,6 +1041,7 @@ function CardStack({
           onCardColorChange={onCardColorChange}
           onCardLayoutChange={onCardLayoutChange}
           onCardOrientationChange={onCardOrientationChange}
+          maxExportSize={maxExportSize}
         />
       ))}
       <AddCardButton onAdd={onAddCard} size={LANDSCAPE_SIZE} rounding={rounding} paddingColor={DEFAULT_PADDING_COLOR} />
@@ -969,6 +1065,7 @@ type CardEditorProps = {
   onCardColorChange: (cardId: string, value: string) => void;
   onCardLayoutChange: (cardId: string, layout: LayoutKey) => void;
   onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
+  maxExportSize: ExportSize;
 };
 
 function CardEditor({
@@ -986,6 +1083,7 @@ function CardEditor({
   onCardColorChange,
   onCardLayoutChange,
   onCardOrientationChange,
+  maxExportSize,
   totalCards
 }: CardEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1007,7 +1105,7 @@ function CardEditor({
     return () => observer.disconnect();
   }, []);
 
-  const cardSize = getScaledCardSize(card, padding);
+  const cardSize = getScaledCardSize(card, padding, maxExportSize);
   const scaledPadding = padding * cardSize.scale;
   const layout = getLayout(card.layout);
   const scaleX = bounds.width ? bounds.width / cardSize.width : 1;
@@ -1315,10 +1413,11 @@ type CardThumbnailProps = {
   card: Card;
   padding: number;
   rounding: number;
+  maxExportSize: ExportSize;
 };
 
-function CardThumbnail({ card, padding, rounding }: CardThumbnailProps) {
-  const cardSize = getScaledCardSize(card, padding);
+function CardThumbnail({ card, padding, rounding, maxExportSize }: CardThumbnailProps) {
+  const cardSize = getScaledCardSize(card, padding, maxExportSize);
   const scaledPadding = padding * cardSize.scale;
   const layout = getLayout(card.layout);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
