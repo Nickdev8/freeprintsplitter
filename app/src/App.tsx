@@ -40,9 +40,21 @@ const MAX_CARD_SCALE = 4;
 const DEFAULT_PADDING = 18;
 const DEFAULT_PADDING_COLOR = "#f4edde";
 const DEFAULT_ROUNDING = 12;
-const DEFAULT_MAX_EXPORT_SIZE: ExportSize = { width: 6000, height: 4000 };
-const MIN_EXPORT_SIZE = 500;
-const MAX_EXPORT_SIZE = 12000;
+const DEFAULT_BASE_CARD_SIZE: ExportSize = {
+  width: Math.round((CM_WIDTH / 2.54) * DPI),
+  height: Math.round((CM_HEIGHT / 2.54) * DPI)
+};
+const PRESET_BASE_SIZES: { label: string; description: string; width: number; height: number }[] = [
+  { label: "Freeprints", description: "4×6 in", width: 1800, height: 1200 },
+  {
+    label: "Kruitvat prints",
+    description: "12.7×8.9 cm",
+    width: Math.round((12.7 / 2.54) * DPI),
+    height: Math.round((8.9 / 2.54) * DPI)
+  }
+];
+const MIN_BASE_SIZE = 300;
+const MAX_BASE_SIZE = 12000;
 
 type LayoutKey = "2x2" | "2x3" | "3x3";
 type LayoutPreset = {
@@ -73,17 +85,13 @@ const colorPresets = [
 
 const buildId = () => Math.random().toString(36).slice(2);
 
-const LANDSCAPE_SIZE = {
-  width: Math.round((CM_WIDTH / 2.54) * DPI),
-  height: Math.round((CM_HEIGHT / 2.54) * DPI)
-};
-const PORTRAIT_SIZE = {
-  width: LANDSCAPE_SIZE.height,
-  height: LANDSCAPE_SIZE.width
-};
-
-const getSizeForOrientation = (orientation: "landscape" | "portrait") =>
-  orientation === "landscape" ? LANDSCAPE_SIZE : PORTRAIT_SIZE;
+const getSizeForOrientation = (orientation: "landscape" | "portrait", baseSize: ExportSize) =>
+  orientation === "landscape"
+    ? baseSize
+    : {
+        width: baseSize.height,
+        height: baseSize.width
+      };
 
 const getMaxSizeForOrientation = (maxSize: ExportSize, orientation: "landscape" | "portrait") =>
   orientation === "landscape"
@@ -95,10 +103,10 @@ const getMaxSizeForOrientation = (maxSize: ExportSize, orientation: "landscape" 
 
 const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
 
-function getCardScale(card: Card, padding: number) {
-  const baseSize = getSizeForOrientation(card.orientation);
+function getCardScale(card: Card, padding: number, baseSize: ExportSize) {
+  const baseSizeForOrientation = getSizeForOrientation(card.orientation, baseSize);
   const layout = getLayout(card.layout);
-  const metrics = getSlotMetrics(0, baseSize, padding, layout);
+  const metrics = getSlotMetrics(0, baseSizeForOrientation, padding, layout);
   const innerW = metrics.innerW;
   const innerH = metrics.innerH;
   let maxW = 0;
@@ -114,9 +122,14 @@ function getCardScale(card: Card, padding: number) {
   return clamp(scaleNeeded, 1, MAX_CARD_SCALE);
 }
 
-function getScaledCardSize(card: Card, padding: number, maxSize: ExportSize = DEFAULT_MAX_EXPORT_SIZE) {
-  const base = getSizeForOrientation(card.orientation);
-  const scale = getCardScale(card, padding);
+function getScaledCardSize(
+  card: Card,
+  padding: number,
+  maxSize: ExportSize,
+  baseSize: ExportSize = DEFAULT_BASE_CARD_SIZE
+) {
+  const base = getSizeForOrientation(card.orientation, baseSize);
+  const scale = getCardScale(card, padding, baseSize);
   const maxForOrientation = getMaxSizeForOrientation(maxSize, card.orientation);
   const maxWidthScale = maxForOrientation.width > 0 ? maxForOrientation.width / base.width : Infinity;
   const maxHeightScale = maxForOrientation.height > 0 ? maxForOrientation.height / base.height : Infinity;
@@ -324,7 +337,7 @@ function App() {
   const [cards, setCards] = useState<Card[]>([createEmptyCard()]);
   const [padding, setPadding] = useState(DEFAULT_PADDING);
   const [rounding, setRounding] = useState(DEFAULT_ROUNDING);
-  const [maxExportSize, setMaxExportSize] = useState<ExportSize>({ ...DEFAULT_MAX_EXPORT_SIZE });
+  const [baseCardSize, setBaseCardSize] = useState<ExportSize>({ ...DEFAULT_BASE_CARD_SIZE });
   const [hovering, setHovering] = useState(false);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [isFilling, setIsFilling] = useState(false);
@@ -351,14 +364,19 @@ function App() {
     []
   );
 
-  const setMaxExportDimension = (key: keyof ExportSize, value: number) => {
+  const setBaseCardDimension = (key: keyof ExportSize, value: number) => {
     const numeric = Number(value);
-    const safeValue = Number.isFinite(numeric) ? numeric : DEFAULT_MAX_EXPORT_SIZE[key];
-    const clamped = clamp(Math.round(safeValue), MIN_EXPORT_SIZE, MAX_EXPORT_SIZE);
-    setMaxExportSize((prev) => ({ ...prev, [key]: clamped }));
+    const safeValue = Number.isFinite(numeric) ? numeric : DEFAULT_BASE_CARD_SIZE[key];
+    const clamped = clamp(Math.round(safeValue), MIN_BASE_SIZE, MAX_BASE_SIZE);
+    setBaseCardSize((prev) => ({ ...prev, [key]: clamped }));
   };
 
-  const resetMaxExportSize = () => setMaxExportSize({ ...DEFAULT_MAX_EXPORT_SIZE });
+  const resetBaseCardSize = () => setBaseCardSize({ ...DEFAULT_BASE_CARD_SIZE });
+  const applyBasePreset = (width: number, height: number) => {
+    const w = clamp(Math.round(width), MIN_BASE_SIZE, MAX_BASE_SIZE);
+    const h = clamp(Math.round(height), MIN_BASE_SIZE, MAX_BASE_SIZE);
+    setBaseCardSize({ width: w, height: h });
+  };
 
   const handleFiles = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -443,7 +461,7 @@ function App() {
 
       const resolveMetrics = (card: Card, slotIndex: number) => {
         const layout = getLayout(card.layout);
-        const size = getSizeForOrientation(card.orientation);
+        const size = getSizeForOrientation(card.orientation, baseCardSize);
         return getSlotMetrics(slotIndex, size, padding, layout);
       };
 
@@ -486,7 +504,9 @@ function App() {
   };
 
   const paddingInMm = (padding / DPI) * 25.4;
-  const exportSizeLabel = formatSize(maxExportSize.width, maxExportSize.height);
+  const exportSizeLabel = formatSize(baseCardSize.width, baseCardSize.height);
+  const baseSizeLabel = formatSize(baseCardSize.width, baseCardSize.height);
+  const portraitBaseLabel = formatSize(baseCardSize.height, baseCardSize.width);
   const resetStyling = () => {
     setPadding(DEFAULT_PADDING);
     setRounding(DEFAULT_ROUNDING);
@@ -521,7 +541,7 @@ function App() {
   };
 
   const renderCardToBlob = async (card: Card): Promise<Blob | null> => {
-    const cardSize = getScaledCardSize(card, padding, maxExportSize);
+    const cardSize = getScaledCardSize(card, padding, baseCardSize, baseCardSize);
     const scaledPadding = padding * cardSize.scale;
     const layout = getLayout(card.layout);
     const canvas = document.createElement("canvas");
@@ -591,31 +611,12 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const controlBlock = [
-    {
-      label: "Padding",
-      value: padding,
-      description: `${padding.toFixed(0)} px · ${paddingInMm.toFixed(1)} mm`,
-      min: 0,
-      max: 80,
-      onChange: (v: number) => setPadding(v)
-    },
-    {
-      label: "Image rounding",
-      value: rounding,
-      description: `${rounding.toFixed(0)} px`,
-      min: 0,
-      max: 120,
-      onChange: (v: number) => setRounding(v)
-    },
-  ];
-
   return (
     <div className="max-w-screen-xl mx-auto px-4 md:px-8 py-10 space-y-8 text-ink">
       <header className="grid lg:grid-cols-[1.4fr,1fr] gap-6 items-center">
         <div className="space-y-3">
           <p className="uppercase tracking-[0.08em] text-sm text-slate-600">
-            Tiny-glade like controls · 10×15 cm
+            Tiny-glade like controls · {baseSizeLabel}px base
           </p>
           <h1 className="text-3xl sm:text-4xl lg:text-5xl font-display leading-tight">
             Drag photos into card slots,
@@ -626,16 +627,17 @@ function App() {
           <p className="text-slate-700 max-w-2xl">
             Pick images on the left, drop or tap them into the card slots, then drag and scale inside
             the masked area. Defaults are tuned for 4:3 photos; choose 2×2, 2×3, or 3×3 layouts per card.
+            Set a custom card base (pixel size) when you need a different ratio.
           </p>
         </div>
         <div className="grid grid-cols-3 gap-3 glass rounded-2xl p-4">
           <Stat label="Library" primary={`${images.length}`} secondary={`${cards.length} card(s)`} />
           <Stat
-            label="Padding"
-            primary={`${padding.toFixed(0)} px`}
-            secondary={`${paddingInMm.toFixed(1)} mm`}
+            label="Card base"
+            primary={`${baseSizeLabel}px`}
+            secondary={`Portrait ${portraitBaseLabel}px`}
           />
-          <Stat label="Max export" primary={`${exportSizeLabel}px`} secondary="Landscape cap" />
+          <Stat label="Exports" primary={`${exportSizeLabel}px`} secondary={`Portrait ${portraitBaseLabel}px`} />
         </div>
       </header>
 
@@ -692,37 +694,56 @@ function App() {
                 onChange={(v) => setRounding(v)}
                 onReset={rounding !== DEFAULT_ROUNDING ? () => setRounding(DEFAULT_ROUNDING) : undefined}
               />
-              <div className="rounded-xl border border-black/10 bg-white/70 px-3 py-2 flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-3">
+              <div className="space-y-3 pt-3 border-t border-dashed border-black/10">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold">Max export size</p>
-                    <p className="text-xs text-slate-600">
-                      Caps PNG output (landscape); portrait swaps these values.
-                    </p>
+                    <p className="text-sm font-semibold">Sizing</p>
+                    <p className="text-xs text-slate-600">Card size equals export size (landscape; portrait flips).</p>
                   </div>
                   <button
                     className="px-2 py-1 text-[11px] rounded-lg border border-black/10 bg-white disabled:opacity-50"
-                    onClick={resetMaxExportSize}
+                    onClick={resetBaseCardSize}
                     disabled={
-                      maxExportSize.width === DEFAULT_MAX_EXPORT_SIZE.width &&
-                      maxExportSize.height === DEFAULT_MAX_EXPORT_SIZE.height
+                      baseCardSize.width === DEFAULT_BASE_CARD_SIZE.width &&
+                      baseCardSize.height === DEFAULT_BASE_CARD_SIZE.height
                     }
                   >
-                    Reset
+                    Reset size
                   </button>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-700">Quick sizes</span>
+                  {PRESET_BASE_SIZES.map((preset) => (
+                    <button
+                      key={preset.label}
+                      className={`px-2.5 py-1.5 text-[11px] rounded-lg border ${
+                        baseCardSize.width === preset.width && baseCardSize.height === preset.height
+                          ? "border-sky-300 bg-white ring-1 ring-sky-200"
+                          : "border-black/10 bg-white/80"
+                      }`}
+                      onClick={() => applyBasePreset(preset.width, preset.height)}
+                      title={preset.description}
+                    >
+                      {preset.label} · {preset.description} ({formatSize(preset.width, preset.height)})
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="min-w-[120px]">
+                    <p className="text-xs font-semibold text-slate-700">Card base (px)</p>
+                    <p className="text-[11px] text-slate-600">Landscape; portrait swaps</p>
+                  </div>
                   <label className="flex items-center gap-1 text-xs text-slate-600">
                     W
                     <input
                       type="number"
-                      min={MIN_EXPORT_SIZE}
-                      max={MAX_EXPORT_SIZE}
+                      min={MIN_BASE_SIZE}
+                      max={MAX_BASE_SIZE}
                       step={50}
-                      value={maxExportSize.width}
-                      onChange={(e) => setMaxExportDimension("width", Number(e.target.value))}
+                      value={baseCardSize.width}
+                      onChange={(e) => setBaseCardDimension("width", Number(e.target.value))}
                       className="w-24 rounded-lg border border-black/10 px-2 py-1 text-sm text-slate-800"
-                      aria-label="Max export width"
+                      aria-label="Base card width"
                     />
                   </label>
                   <span className="text-xs text-slate-500">×</span>
@@ -730,21 +751,23 @@ function App() {
                     H
                     <input
                       type="number"
-                      min={MIN_EXPORT_SIZE}
-                      max={MAX_EXPORT_SIZE}
+                      min={MIN_BASE_SIZE}
+                      max={MAX_BASE_SIZE}
                       step={50}
-                      value={maxExportSize.height}
-                      onChange={(e) => setMaxExportDimension("height", Number(e.target.value))}
+                      value={baseCardSize.height}
+                      onChange={(e) => setBaseCardDimension("height", Number(e.target.value))}
                       className="w-24 rounded-lg border border-black/10 px-2 py-1 text-sm text-slate-800"
-                      aria-label="Max export height"
+                      aria-label="Base card height"
                     />
                   </label>
-                  <span className="text-xs text-slate-600">px</span>
+                  <span className="text-xs text-slate-600">Current: {baseSizeLabel}</span>
+                  <span className="text-xs text-slate-500">Portrait: {portraitBaseLabel}</span>
                 </div>
-                <p className="text-xs text-slate-600">
-                  Current cap: {exportSizeLabel} (landscape). Portrait exports cap at{" "}
-                  {formatSize(maxExportSize.height, maxExportSize.width)}.
-                </p>
+                <div className="flex items-center gap-2 text-xs text-slate-600">
+                  <span className="font-semibold">Exports at:</span>
+                  <span>{exportSizeLabel} landscape</span>
+                  <span className="text-slate-500">/ {portraitBaseLabel} portrait</span>
+                </div>
               </div>
             </div>
           </div>
@@ -843,6 +866,7 @@ function App() {
           <CardStack
             padding={padding}
             rounding={rounding}
+            baseCardSize={baseCardSize}
             cards={cards}
             selectedImageId={selectedImageId}
             selectedImage={images.find((img) => img.id === selectedImageId) || null}
@@ -857,7 +881,6 @@ function App() {
             onCardColorChange={setCardColor}
             onCardLayoutChange={setCardLayout}
             onCardOrientationChange={setCardOrientation}
-            maxExportSize={maxExportSize}
             totalCards={cards.length}
           />
           </div>
@@ -882,7 +905,9 @@ function App() {
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {cards.map((card, index) => {
-            const cardSize = getScaledCardSize(card, padding, maxExportSize);
+            const cardSize = getScaledCardSize(card, padding, baseCardSize, baseCardSize);
+            const baseForOrientation = getSizeForOrientation(card.orientation, baseCardSize);
+            const baseLabel = formatSize(baseForOrientation.width, baseForOrientation.height);
             return (
               <div
                 key={`gallery-${card.id}`}
@@ -891,16 +916,18 @@ function App() {
                 <div className="flex items-center justify-between text-xs text-slate-600">
                   <span className="font-semibold">Card {index + 1}</span>
                   <span>
-                    {card.orientation === "landscape" ? "10×15" : "15×10"} · {cardSize.width}×
-                    {cardSize.height}px
+                    {baseLabel} · {cardSize.width}×{cardSize.height}px
                   </span>
                 </div>
-                <div className="w-full aspect-[3/2] rounded-lg overflow-hidden border border-black/10 bg-white">
+                <div
+                  className="w-full rounded-lg overflow-hidden border border-black/10 bg-white"
+                  style={{ aspectRatio: `${cardSize.width} / ${cardSize.height}` }}
+                >
                   <CardThumbnail
                     card={card}
                     padding={padding}
                     rounding={rounding}
-                    maxExportSize={maxExportSize}
+                    baseCardSize={baseCardSize}
                   />
                 </div>
                 <button
@@ -985,6 +1012,7 @@ type CardStackProps = {
   cards: Card[];
   padding: number;
   rounding: number;
+  baseCardSize: ExportSize;
   selectedImageId: string | null;
   selectedImage: LoadedImage | null;
   onPlaceImage: (cardId: string, slotId: string, imageId: string) => void;
@@ -996,7 +1024,6 @@ type CardStackProps = {
   onCardColorChange: (cardId: string, value: string) => void;
   onCardLayoutChange: (cardId: string, layout: LayoutKey) => void;
   onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
-  maxExportSize: ExportSize;
   totalCards: number;
 };
 
@@ -1004,6 +1031,7 @@ function CardStack({
   cards,
   padding,
   rounding,
+  baseCardSize,
   selectedImageId,
   selectedImage,
   onPlaceImage,
@@ -1015,7 +1043,6 @@ function CardStack({
   onCardColorChange,
   onCardLayoutChange,
   onCardOrientationChange,
-  maxExportSize,
   totalCards
 }: CardStackProps) {
   return (
@@ -1041,10 +1068,15 @@ function CardStack({
           onCardColorChange={onCardColorChange}
           onCardLayoutChange={onCardLayoutChange}
           onCardOrientationChange={onCardOrientationChange}
-          maxExportSize={maxExportSize}
+          baseCardSize={baseCardSize}
         />
       ))}
-      <AddCardButton onAdd={onAddCard} size={LANDSCAPE_SIZE} rounding={rounding} paddingColor={DEFAULT_PADDING_COLOR} />
+      <AddCardButton
+        onAdd={onAddCard}
+        size={baseCardSize}
+        rounding={rounding}
+        paddingColor={DEFAULT_PADDING_COLOR}
+      />
     </div>
   );
 }
@@ -1065,7 +1097,7 @@ type CardEditorProps = {
   onCardColorChange: (cardId: string, value: string) => void;
   onCardLayoutChange: (cardId: string, layout: LayoutKey) => void;
   onCardOrientationChange: (cardId: string, orientation: "landscape" | "portrait") => void;
-  maxExportSize: ExportSize;
+  baseCardSize: ExportSize;
 };
 
 function CardEditor({
@@ -1073,6 +1105,7 @@ function CardEditor({
   index,
   padding,
   rounding,
+  baseCardSize,
   selectedImageId,
   selectedImage,
   onPlaceImage,
@@ -1083,7 +1116,6 @@ function CardEditor({
   onCardColorChange,
   onCardLayoutChange,
   onCardOrientationChange,
-  maxExportSize,
   totalCards
 }: CardEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1105,7 +1137,9 @@ function CardEditor({
     return () => observer.disconnect();
   }, []);
 
-  const cardSize = getScaledCardSize(card, padding, maxExportSize);
+  const cardSize = getScaledCardSize(card, padding, baseCardSize, baseCardSize);
+  const baseForOrientation = getSizeForOrientation(card.orientation, baseCardSize);
+  const baseLabel = formatSize(baseForOrientation.width, baseForOrientation.height);
   const scaledPadding = padding * cardSize.scale;
   const layout = getLayout(card.layout);
   const scaleX = bounds.width ? bounds.width / cardSize.width : 1;
@@ -1126,8 +1160,7 @@ function CardEditor({
         <span className="font-semibold">Card {index + 1}</span>
         <div className="flex items-center gap-2">
           <span className="text-xs">
-            {card.orientation === "landscape" ? "10×15 cm" : "15×10 cm"} · {cardSize.width}×
-            {cardSize.height}px · {layout.label} grid
+            {baseLabel} base · {cardSize.width}×{cardSize.height}px · {layout.label} grid
           </span>
           {index > 0 && (
             <button
@@ -1196,19 +1229,25 @@ function CardEditor({
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-600">Orientation</span>
           <div className="flex gap-1">
-            {(["landscape", "portrait"] as const).map((o) => (
-              <button
-                key={o}
-                className={`px-2 py-1 text-[11px] rounded-lg border ${
-                  card.orientation === o
-                    ? "border-sky-300 bg-white ring-1 ring-sky-200"
-                    : "border-black/10 bg-white/80"
-                }`}
-                onClick={() => onCardOrientationChange(card.id, o)}
-              >
-                {o === "landscape" ? "10×15" : "15×10"}
-              </button>
-            ))}
+            {(["landscape", "portrait"] as const).map((o) => {
+              const label = formatSize(
+                o === "landscape" ? baseCardSize.width : baseCardSize.height,
+                o === "landscape" ? baseCardSize.height : baseCardSize.width
+              );
+              return (
+                <button
+                  key={o}
+                  className={`px-2 py-1 text-[11px] rounded-lg border ${
+                    card.orientation === o
+                      ? "border-sky-300 bg-white ring-1 ring-sky-200"
+                      : "border-black/10 bg-white/80"
+                  }`}
+                  onClick={() => onCardOrientationChange(card.id, o)}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1413,11 +1452,11 @@ type CardThumbnailProps = {
   card: Card;
   padding: number;
   rounding: number;
-  maxExportSize: ExportSize;
+  baseCardSize: ExportSize;
 };
 
-function CardThumbnail({ card, padding, rounding, maxExportSize }: CardThumbnailProps) {
-  const cardSize = getScaledCardSize(card, padding, maxExportSize);
+function CardThumbnail({ card, padding, rounding, baseCardSize }: CardThumbnailProps) {
+  const cardSize = getScaledCardSize(card, padding, baseCardSize, baseCardSize);
   const scaledPadding = padding * cardSize.scale;
   const layout = getLayout(card.layout);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
